@@ -26,6 +26,7 @@ class ChoiceAnswer:
     choice: str
     probabilities: dict[str, float]
     confidence: float
+    __match_args__ = ("choice", "confidence")
 
     def top(self, n: int = 3) -> list[tuple[str, float]]:
         return sorted(self.probabilities.items(), key=lambda kv: -kv[1])[:n]

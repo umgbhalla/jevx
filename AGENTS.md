@@ -6,6 +6,11 @@ community experiments, and agent-loop patterns. Read-only research — no app co
 ## Layout
 
 - `00-quickstart.py` — raw HTTP + SDK hello-world (needs `TYPESAFE_API_KEY`)
+- `sdk/jevx/` — Python SDK: stdlib-only client + idiomatic `py` layer
+  - `client.py` — sync/async clients, retries, `evaluate()` one-shot
+  - `py.py` — `feels`/`pick`/`rate`, `P`/`Score`, matchable `Choice`,
+    declarative `Questions`, `@gate`/`@route`, `record`/`replay`
+  - `questions.py`, `answers.py`, `errors.py` — builders, typed answers, errors
 - `.agents/skills/jev/SKILL.md` — condensed Jev usage for agents (start here)
 - `.agents/research/` — deep notes, one topic per file:
   - `api-spec.md` — endpoint, Noul/Choice/Score schemas, errors, limits
