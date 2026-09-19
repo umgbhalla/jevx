@@ -11,7 +11,8 @@ from __future__ import annotations
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import feels
+from jevx.py import case
+from jevx.relational import Table
 
 
 @ensure(
@@ -27,21 +28,41 @@ def select(
 ) -> dict:
     """tests: [{id, path, framework}]. Returns run/skip/review lists + stats."""
     s1 = (backend or Live()).s1()
-    run, skip, review = [], [], []
-    for t in tests:
-        q = (
-            "No code changes detected. Could this test still be affected by any latent issue?"
-            if not diff.strip()
-            else f"Could the current code change affect behavior verified by "
-            f"{t.get('framework', 'the')} test at {t['path']}?"
-        )
-        p = float(feels(q, {"diff": diff[:4000], "test": t}, client=s1))
-        if p < skip_at:
-            skip.append({**t, "p_affected": p})
-        elif p < review_at:
-            review.append({**t, "p_affected": p})
-        else:
-            run.append({**t, "p_affected": p})
+    instructions = (
+        {
+            "question": "Could this test still be affected by a latent issue?",
+            "focus": "No code changes were detected in the supplied diff.",
+        }
+        if not diff.strip()
+        else {
+            "question": "Could the current code change affect behavior verified by this test?",
+            "focus": "Use the test path and framework to identify behavior it verifies.",
+        }
+    )
+    scores = Table(tests, client=s1, context={"diff": diff[:4000]}).noul(instructions)
+    buckets = [
+        case[
+            score < skip_at: "skip",
+            score < review_at: "review",
+            ...: "run",
+        ].ask({})
+        for score in scores
+    ]
+    run = [
+        {**test, "p_affected": float(score)}
+        for test, score, bucket in zip(tests, scores, buckets, strict=True)
+        if bucket == "run"
+    ]
+    skip = [
+        {**test, "p_affected": float(score)}
+        for test, score, bucket in zip(tests, scores, buckets, strict=True)
+        if bucket == "skip"
+    ]
+    review = [
+        {**test, "p_affected": float(score)}
+        for test, score, bucket in zip(tests, scores, buckets, strict=True)
+        if bucket == "review"
+    ]
     # review band runs too — unsure is not safe to skip
     return {
         "run": run + review,

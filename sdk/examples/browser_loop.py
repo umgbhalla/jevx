@@ -16,6 +16,7 @@ from dataclasses import field
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
+from jevx.py import choice
 from jevx.py import noul
 from jevx.py import vector
 from jevx.s2 import System2
@@ -65,7 +66,7 @@ NEXT_ACTION = (
 def validate_choice(choice: str, probs: dict) -> None:
     if abs(sum(probs.values()) - 1.0) > 0.02:
         raise ValueError(f"probabilities sum to {sum(probs.values())}, not 1")
-    if choice != max(probs, key=probs.get):
+    if choice != max(probs.items(), key=lambda item: item[1])[0]:
         raise ValueError(f"choice {choice!r} is not the argmax")
 
 
@@ -147,11 +148,8 @@ HEADS = {
 }
 
 
-def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, float]:
+def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, float, dict]:
     """ONE fan-out request: operation + all target heads; consume selected head only."""
-    from jevx.py import _decide
-    from jevx.questions import Choice as _Q
-
     state = {
         "goal": goal,
         "page": {k: snap[k] for k in ("url", "title", "text")},
@@ -159,23 +157,25 @@ def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, fl
         "recent_actions": recent[-10:],
     }
     targets = {e["index"]: e.get("label") for e in snap["elements"]}
-    qs = {"operation": _Q(NEXT_ACTION, dict(OP_DESCRIPTIONS))}
-    for op, head in HEADS.items():
-        qs[head] = _Q(
-            TARGET_INSTRUCTIONS + f" Operation under consideration: {op}.",
-            dict(targets) or {"none": "no elements"},
-        )
-    out = _decide(state, qs, s1)
-    op = out["operation"]
+    out = vector(
+        operation=choice(NEXT_ACTION, OP_DESCRIPTIONS),
+        **{
+            head: choice(
+                TARGET_INSTRUCTIONS + f" Operation under consideration: {op}.",
+                targets or {"none": "no elements"},
+            )
+            for op, head in HEADS.items()
+        },
+    ).ask(state, client=s1)
+    op = out.operation
     validate_choice(op.choice, op.probabilities)
     if op.choice not in HEADS:
-        return op.choice, None, op.confidence
+        return op.choice, None, op.confidence, {}
     tgt = out[HEADS[op.choice]]
     validate_choice(tgt.choice, tgt.probabilities)
     if tgt.choice not in targets and tgt.choice != "none":
         raise ValueError(f"target {tgt.choice!r} not in observed elements")
-    choose._last_tgt_probs = dict(tgt.probabilities)
-    return op.choice, tgt.choice, min(op.confidence, tgt.confidence)
+    return op.choice, tgt.choice, min(op.confidence, tgt.confidence), dict(tgt.probabilities)
 
 
 @ensure(
@@ -198,7 +198,7 @@ def reconcile(
         snap = browser.snapshot()  # observe
         if browser.logged_in and all(r["paid"] for r in browser.rows):
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
-        op, tgt, conf = choose(goal, snap, recent, s1)
+        op, tgt, conf, target_probs = choose(goal, snap, recent, s1)
         # pre-exec watcher gates (same state, one extra request)
         w = WATCH.ask({"goal": goal, "page": snap, "history": recent[-10:]}, client=s1)
         if w.goal_done >= WATCH_DONE_AT:
@@ -208,7 +208,7 @@ def reconcile(
         if (op, tgt) == last_proposed and not prev_changed and op not in ("WAIT",):
             same_misses += 1
             if same_misses >= 2:
-                alt = pick_alternate(dict(getattr(choose, "_last_tgt_probs", {})), {tgt or ""})
+                alt = pick_alternate(target_probs, {tgt or ""})
                 if alt:
                     tgt = alt
         else:

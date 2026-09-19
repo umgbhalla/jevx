@@ -8,15 +8,14 @@ Findings are review prompts, not proof of defect — S2 fixes, S1 re-checks.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
+from jevx.py import choice
 from jevx.py import feels
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
 
 SCREEN_AT, LOCATE_AT, ROUTE_SEV, BLOCK_SEV = 0.70, 0.55, 1.5, 2.0
 MAX_FOLLOW_UPS, MAX_PROFILES, MAX_ROUNDS, HUNKS_PER_ROUND = 8, 5, 3, 8
@@ -28,57 +27,75 @@ def _is_sec(path: str) -> bool:
     return any(s in path.split("/") for s in SEC_PATHS)
 
 
-class Screen(Questions):
-    correctness: bool = ask(
-        "Does the patch directly support that this change likely introduces incorrect runtime behavior?",
-        threshold=SCREEN_AT,
-    )
-    security: bool = ask(
-        "Does the patch directly support that this change introduces or weakens a security boundary?",
-        threshold=SCREEN_AT,
-    )
-    reliability: bool = ask(
-        "Does the patch directly support that this change can crash, race, leak, deadlock, or recover poorly?",
-        threshold=SCREEN_AT,
-    )
-    compatibility: bool = ask(
-        "Does the patch directly support that this change can break an existing caller, format, protocol, or public behavior?",
-        threshold=SCREEN_AT,
-    )
-    test_gap: bool = ask(
-        "Does the patch change important behavior without adequate targeted evidence in changed tests?",
-        threshold=SCREEN_AT,
-    )
+SCREEN = vector(
+    correctness=noul(
+        "Does the patch directly support that this change likely introduces incorrect runtime behavior?"
+    ),
+    security=noul(
+        "Does the patch directly support that this change introduces or weakens a security boundary?"
+    ),
+    reliability=noul(
+        "Does the patch directly support that this change can crash, race, leak, deadlock, or recover poorly?"
+    ),
+    compatibility=noul(
+        "Does the patch directly support that this change can break an existing caller, format, protocol, or public behavior?"
+    ),
+    test_gap=noul(
+        "Does the patch change important behavior without adequate targeted evidence in changed tests?"
+    ),
+)
 
+PROFILE = vector(
+    category=choice(
+        "Which category best describes the patch?",
+        {
+            "behavior": "Changes runtime behavior or business logic.",
+            "interface": "Changes a public API, protocol, or data format.",
+            "infrastructure": "Changes build, deployment, storage, or runtime foundations.",
+            "observability": "Changes logs, metrics, traces, or diagnostics.",
+            "refactor": "Changes structure without intended behavior changes.",
+            "routine": "Documentation, formatting, or another low-risk maintenance edit.",
+        },
+    ),
+    priority=score(
+        "Rate how closely a human should review the patch.",
+        (
+            {"summary": "low", "signals": ["routine", "isolated", "easy to revert"]},
+            {"summary": "notable", "signals": ["multiple callers", "behavior changes"]},
+            {"summary": "high", "signals": ["security", "data integrity", "concurrency"]},
+            {"summary": "urgent", "signals": ["production outage", "irreversible impact"]},
+        ),
+    ),
+)
 
-class Profile(Questions):
-    category: Literal[
-        "behavior", "interface", "infrastructure", "observability", "refactor", "routine"
-    ] = ask("Which category best describes the patch?")
-    priority: Score[Literal["low", "notable", "high", "urgent"]] = ask(
-        "Rate how closely a human should review the patch."
-    )
-
-
-class Finding(Questions):
-    mechanism: Literal[
-        "authorization",
-        "injection",
-        "exposure",
-        "unsafe_default",
-        "logic",
-        "race",
-        "leak",
-        "no_issue",
-    ] = ask(
-        "Which mechanism best describes the suspected concern supported by the selected evidence?"
-    )
-    severity: Score[Literal["cosmetic", "notable", "high", "blocking"]] = ask(
-        "Assuming the evidence exhibits the concern, rate the likely production impact."
-    )
-    owner: Literal["security", "api", "runtime", "testing", "maintainer"] = ask(
-        "Which reviewer is best suited to investigate this concern?"
-    )
+FINDING = vector(
+    mechanism=choice(
+        "Which mechanism best describes the suspected concern supported by the selected evidence?",
+        (
+            "authorization",
+            "injection",
+            "exposure",
+            "unsafe_default",
+            "logic",
+            "race",
+            "leak",
+            "no_issue",
+        ),
+    ),
+    severity=score(
+        "Assuming the evidence exhibits the concern, rate the likely production impact.",
+        (
+            {"summary": "cosmetic", "signals": ["no user-visible effect"]},
+            {"summary": "notable", "signals": ["limited degradation"]},
+            {"summary": "high", "signals": ["service failure", "data exposure"]},
+            {"summary": "blocking", "signals": ["severe or broad production harm"]},
+        ),
+    ),
+    owner=choice(
+        "Which reviewer is best suited to investigate this concern?",
+        ("security", "api", "runtime", "testing", "maintainer"),
+    ),
+)
 
 
 def _pick(prompt: str, state: dict, options: dict, s1) -> tuple[str, float]:
@@ -102,13 +119,14 @@ def review(pr: dict, backend: Backend | None = None) -> dict:
     for f in pr["files"]:
         if followed >= MAX_FOLLOW_UPS or profiled >= MAX_PROFILES:
             break
-        m = Screen(client=s1).ask(
-            {"patch": f["patch"][:3000], "changed_tests": f.get("changed_tests", [])}
+        m = SCREEN.ask(
+            {"patch": f["patch"][:3000], "changed_tests": f.get("changed_tests", [])},
+            client=s1,
         )  # 1 req
-        if not (m.correctness or m.security or m.reliability or m.compatibility or m.test_gap):
+        if not any(value >= SCREEN_AT for value in m.as_dict().values()):
             continue
         followed += 1
-        p = Profile(client=s1).ask({"patch": f["patch"][:3000]})  # 1 req
+        p = PROFILE.ask({"patch": f["patch"][:3000]}, client=s1)  # 1 req
         prio = float(p.priority) + (0.5 if _is_sec(f["path"]) else 0.0)
         if prio < 1.0:
             continue
@@ -123,17 +141,21 @@ def review(pr: dict, backend: Backend | None = None) -> dict:
             )
             if ev == "noMatch" or ev_conf < LOCATE_AT:
                 continue
-            fin = Finding(client=s1).ask({"hunk": hunk, "path": f["path"]})  # 1 req
-            if fin.mechanism == "no_issue":
+            fin = FINDING.ask({"hunk": hunk, "path": f["path"]}, client=s1)  # 1 req
+            if fin.mechanism.choice == "no_issue":
                 continue
             sev = float(fin.severity)
             findings.append(
                 {
                     "file": f["path"],
                     "hunk": hunk,
-                    "mechanism": fin.mechanism,
+                    "mechanism": fin.mechanism.choice,
                     "severity": sev,
-                    "owner": "security" if (_is_sec(f["path"]) and sev >= ROUTE_SEV) else fin.owner,
+                    "owner": (
+                        "security"
+                        if (_is_sec(f["path"]) and sev >= ROUTE_SEV)
+                        else fin.owner.choice
+                    ),
                 }
             )
 

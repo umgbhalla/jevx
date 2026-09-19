@@ -34,7 +34,7 @@ def tick(state: dict, backend: Backend | None = None) -> dict:
             "occupied": {"prob": float(r.occupied)},
             "comfort": {
                 "score": float(r.comfort),
-                "confidence": r.confidence("comfort"),
+                "confidence": r.comfort.confidence,
                 "probs": r.comfort.probabilities,
             },
             "quiet_hours": {"prob": float(r.quiet_hours)},

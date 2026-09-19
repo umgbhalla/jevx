@@ -10,24 +10,23 @@ import json
 from typing import Any
 
 from jevx import Backend
-from jevx import ChoiceAnswer
 from jevx import Live
-from jevx import Questions
-from jevx import ask
+from jevx import case
 from jevx import ensure
+from jevx import noul
 from jevx import task
+from jevx import vector
 from jevx.redact import scrub
 
+SYMPTOMS = vector(
+    down=noul("is the service down or erroring?"),
+    user_facing=noul("are users affected?"),
+    data_risk=noul("is data loss or corruption plausible?"),
+)
 
-class Symptoms(Questions):
-    down: bool = ask("is the service down or erroring?")
-    user_facing: bool = ask("are users affected?")
-    data_risk: bool = ask("is data loss or corruption plausible?", threshold=0.35)
-
-
-class Verify(Questions):
-    gone: bool = ask("are the reported symptoms gone from these logs?", threshold=0.8)
-    caused: bool = ask("does the fix address the root cause, not just symptoms?", threshold=0.7)
+VERIFIED = (noul("are the reported symptoms gone from these logs?") >= 0.8) & (
+    noul("does the fix address the root cause, not just symptoms?") >= 0.7
+)
 
 
 HYPOTHESES = {
@@ -58,37 +57,38 @@ def respond(
     """Use injected log/approval hooks and a scripted backend for offline runs."""
     logs = scrub(logs)
     with task("incident", backend if backend is not None else Live()) as run:
-        symptoms = run.ask(Symptoms, logs)
-        if symptoms.down is False:
-            return _result(run, action="NOOP", why="no outage in logs")
-        if symptoms.data_risk:
-            return _result(
-                run,
-                action="ESCALATE",
-                why="possible data risk - human first",
-                sev="SEV-1" if symptoms.user_facing else "SEV-2",
-            )
+        symptoms = run.ask(SYMPTOMS, logs)
+        stop = case[
+            symptoms.down < 0.5: {"action": "NOOP", "why": "no outage in logs"},
+            symptoms.data_risk >= 0.35: {
+                "action": "ESCALATE",
+                "why": "possible data risk - human first",
+                "sev": "SEV-1" if symptoms.user_facing >= 0.5 else "SEV-2",
+            },
+            ...: None,
+        ].ask({})
+        if stop is not None:
+            return _result(run, **stop)
 
-        severity = "SEV-1" if symptoms.user_facing else "SEV-2"
+        severity = case[
+            symptoms.user_facing >= 0.5: "SEV-1",
+            ...: "SEV-2",
+        ].ask({})
         for round_no in range(max_rounds):
             h = run.pick(
                 "most likely cause?",
                 {**run.context(), "logs": logs[-4000:], "round": round_no},
                 HYPOTHESES,
             )
-            match h:
-                case ChoiceAnswer(confidence=confidence) if confidence < 0.5:
-                    return _result(run, action="ESCALATE", why="hypothesis unsure", round=round_no)
-                case ChoiceAnswer(choice=cause, confidence=_) if (
-                    cause in RISKY_HYPOTHESES
-                    and approve is not None
-                    and not approve(cause, None)
-                ):
-                    return _result(
-                        run, action="APPROVAL", why=f"{cause} needs approval", round=round_no
-                    )
-                case ChoiceAnswer(choice=cause):
-                    pass
+            selection = case[
+                h.confidence < 0.5: "uncertain",
+                ...: "selected",
+            ].ask({})
+            if selection == "uncertain":
+                return _result(run, action="ESCALATE", why="hypothesis unsure", round=round_no)
+            cause = h.choice
+            if cause in RISKY_HYPOTHESES and approve is not None and not approve(cause, None):
+                return _result(run, action="APPROVAL", why=f"{cause} needs approval", round=round_no)
 
             with run.branch(f"round {round_no}: {cause}", restore=False):
                 fix = run.s2.ask(
@@ -103,8 +103,8 @@ def respond(
                     else run.s2.ask("Show fresh logs/errors after the fix attempt above.")
                 )
                 run.record("observation", summary="collected post-fix logs", logs=new_logs[-4000:])
-                verified = run.ask(Verify, {"logs": new_logs[-4000:], "fix": fix})
-                if verified.gone and verified.caused:
+                verified = run.ask(VERIFIED, {"logs": new_logs[-4000:], "fix": fix})
+                if verified:
                     return _result(
                         run,
                         action="RESOLVED",
@@ -126,9 +126,17 @@ if __name__ == "__main__":
         "500 errors from the database connection pool",
         Sim(
             s1_script={
-                "down": [{"type": "noul", "noul": 0.99}],
-                "user_facing": [{"type": "noul", "noul": 0.92}],
-                "data_risk": [{"type": "noul", "noul": 0.08}],
+                "q0": [
+                    {"type": "noul", "noul": 0.99},
+                    {"type": "noul", "noul": 0.2},
+                    {"type": "noul", "noul": 0.95},
+                ],
+                "q1": [
+                    {"type": "noul", "noul": 0.92},
+                    {"type": "noul", "noul": 0.5},
+                    {"type": "noul", "noul": 0.9},
+                ],
+                "q2": [{"type": "noul", "noul": 0.08}],
                 "c": [
                     {
                         "type": "choice",

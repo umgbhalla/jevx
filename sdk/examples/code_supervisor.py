@@ -46,7 +46,7 @@ def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> 
         out = s2.ask(f"Do it, then run tests. Task: {task}")
         d = DIFF_CHECK.ask({"task": task, "diff": out}, client=s1)  # 1 request
         return case[
-            d.correct >= 0.5 and d.risky < 0.35 and d.confidence("correct") >= 0.2 : {
+            d.correct >= 0.5 and d.risky < 0.35 and abs(2 * d.correct - 1) >= 0.2 : {
                 "action": "FINISH",
                 "mode": "trivial",
                 "output": out,
@@ -68,7 +68,7 @@ def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> 
         out = s2.ask(f"Step {i}: implement per plan, run tests, show diff.\nPlan: {plan}")
         d = DIFF_CHECK.ask({"task": task, "diff": out}, client=s1)  # 1 request/turn
         decision = case[
-            d.correct >= 0.5 and d.risky < 0.35 and d.confidence("correct") >= 0.2 : {
+            d.correct >= 0.5 and d.risky < 0.35 and abs(2 * d.correct - 1) >= 0.2 : {
                 "action": "FINISH",
                 "mode": "planned",
                 "turns": i + 1,

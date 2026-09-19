@@ -1,12 +1,19 @@
+from examples import browser_loop
 from examples import conteval
+from examples import context_compact
 from examples import game_loop
+from examples import pipe as pipe_example
+from examples import prefs_review
 from examples import rag_guard
+from examples import review_gate
 from examples import robot_loop
 from examples import shell_gate
 from examples import support_copilot
+from examples import test_select as test_select_example
 from jevx import JSONContent
 from jevx import case
 from jevx.answers import parse_answer
+from jevx.backends import Backend
 from jevx.backends import Sim
 from jevx.fx import ScriptDriver
 from jevx.fx import TraceDriver
@@ -17,9 +24,11 @@ from jevx.py import Questions
 from jevx.py import _freeze
 from jevx.py import ask
 from jevx.py import choice
+from jevx.py import choose_from
 from jevx.py import noul
 from jevx.py import score
 from jevx.py import vector
+from jevx.task import task
 
 
 def test_math_and_threshold_rules_batch_their_questions():
@@ -473,3 +482,246 @@ def test_conteval_keeps_run_policy_local_after_vector_batch():
 
     assert result["route"] == "auto-ship"
     assert result["secure_ok"] is True
+
+
+def test_preference_review_uses_public_dynamic_vector_and_keeps_hunk_context():
+    class OfflineBackend(Backend):
+        def s1(self):
+            return None
+
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "q0": [{"type": "noul", "noul": 0.95}],
+                "q1": [{"type": "noul", "noul": 0.05}],
+            }
+        )
+    )
+    prefs = {"secrets": "Never expose credentials in logs."}
+    hunks = [
+        {"file": "app/log.py", "hunk": "+logger.info(token)"},
+        {"file": "app/cli.py", "hunk": "+print('ready')"},
+    ]
+
+    with use(driver):
+        result = prefs_review.review_diff(prefs, hunks, backend=OfflineBackend())
+
+    assert result["action"] == "block"
+    assert result["violations"][0]["file"] == "app/log.py"
+    assert len(driver.trace) == 1
+    assert set(driver.trace[0]["questions"]) == {"q0", "q1"}
+    first = driver.trace[0]["questions"]["q0"]["instructions"]
+    assert first["preference"]["rule"] == prefs["secrets"]
+    assert first["change"]["hunk"] == hunks[0]["hunk"]
+
+
+def test_browser_fanout_uses_public_vector_in_one_request():
+    operations = tuple(browser_loop.OP_DESCRIPTIONS)
+    targets = {"e_submit_login": 1.0}
+    script = {
+        "q0": [
+            {
+                "type": "choice",
+                "choice": "CLICK",
+                "probabilities": {op: (0.8 if op == "CLICK" else 0.2 / 8) for op in operations},
+                "confidence": 0.8,
+            }
+        ],
+        **{
+            f"q{index}": [
+                {
+                    "type": "choice",
+                    "choice": "e_submit_login",
+                    "probabilities": targets,
+                    "confidence": 1.0,
+                }
+            ]
+            for index in range(1, len(browser_loop.HEADS) + 1)
+        },
+    }
+    driver = TraceDriver(ScriptDriver(script))
+    snap = {
+        "url": "/login",
+        "title": "login",
+        "text": "login form",
+        "elements": [{"index": "e_submit_login", "label": "Log in"}],
+    }
+
+    with use(driver):
+        selected = browser_loop.choose("log in", snap, [], None)
+
+    assert selected == ("CLICK", "e_submit_login", 0.8, targets)
+    assert len(driver.trace) == 1
+    assert set(driver.trace[0]["questions"]) == {"q0", "q1", "q2", "q3", "q4"}
+
+
+def test_test_selector_batches_rows_and_runs_the_review_band():
+    class OfflineBackend:
+        def s1(self):
+            return None
+
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "r0": [{"type": "noul", "noul": 0.1}],
+                "r1": [{"type": "noul", "noul": 0.5}],
+            }
+        )
+    )
+    tests = [
+        {"id": "a", "path": "src/a.py", "framework": "pytest"},
+        {"id": "b", "path": "src/b.py", "framework": "pytest"},
+    ]
+
+    with use(driver):
+        selected = test_select_example.select("diff", tests, backend=OfflineBackend())
+
+    assert [test["id"] for test in selected["skip"]] == ["a"]
+    assert [test["id"] for test in selected["review"]] == ["b"]
+    assert [test["id"] for test in selected["run"]] == ["b"]
+    assert len(driver.trace) == 1
+    questions = driver.trace[0]["questions"]
+    assert questions["r0"]["instructions"]["record"] == tests[0]
+    assert driver.trace[0]["state"]["context"]["diff"] == "diff"
+
+
+def test_context_compaction_batches_exchanges_and_keeps_dropped_audit():
+    class OfflineBackend:
+        def s1(self):
+            return None
+
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "r0": [{"type": "noul", "noul": 0.9}],
+                "r1": [{"type": "noul", "noul": 0.1}],
+            }
+        )
+    )
+    exchanges = [
+        {"role": "user", "content": "Fix the billing bug."},
+        {"role": "assistant", "content": "Unrelated old note."},
+    ]
+
+    with use(driver):
+        compacted = context_compact.compact(exchanges, "fix billing", backend=OfflineBackend())
+
+    assert compacted["kept"] == [exchanges[0]]
+    assert compacted["dropped"][0]["index"] == 1
+    assert compacted["dropped"][0]["prob"] == 0.1
+    assert len(driver.trace) == 1
+
+
+def test_task_history_records_value_vector_calls():
+    backend = Sim(
+        s1_script={
+            "q0": [
+                {"type": "noul", "noul": 0.9},
+                {"type": "noul", "noul": 0.9},
+            ],
+            "q1": [
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.9},
+            ],
+        }
+    )
+    checks = vector(supported=noul("is it supported?"), risky=noul("is it risky?"))
+
+    with task("review", backend) as run:
+        result = run.ask(checks, {"draft": "text"})
+        approved = run.ask(
+            (noul("are claims supported?") >= 0.8) & (noul("is it safe?") >= 0.7),
+            {"draft": "text"},
+        )
+
+    assert result.supported == 0.9
+    assert approved is True
+    assert run.history[-2]["summary"] == "supported, risky"
+    assert run.history[-2]["kind"] == "jev.vector"
+    assert run.history[-1]["kind"] == "jev.rule"
+    assert run.history[-1]["summary"] == "threshold rule"
+    assert set(run.history[-2]["questions"]) == {"q0", "q1"}
+    assert set(run.history[-1]["questions"]) == {"q0", "q1"}
+
+
+def test_review_gate_runs_screen_as_one_named_vector():
+    class OfflineBackend:
+        def s1(self):
+            return None
+
+        def s2(self):
+            return None
+
+    driver = TraceDriver(
+        ScriptDriver(
+            {f"q{i}": [{"type": "noul", "noul": 0.1}] for i in range(5)}
+        )
+    )
+    pr = {"files": [{"path": "src/app.py", "patch": "+x = 1", "hunks": ["+x = 1"]}]}
+
+    with use(driver):
+        result = review_gate.review(pr, backend=OfflineBackend())
+
+    assert result == {"action": "approve", "findings": []}
+    assert len(driver.trace) == 1
+    assert set(driver.trace[0]["questions"]) == {"q0", "q1", "q2", "q3", "q4"}
+
+
+def test_pipe_batches_lines_and_keeps_keep_threshold_in_code():
+    class OfflineBackend(Backend):
+        def s1(self):
+            return None
+
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "r0": [{"type": "noul", "noul": 0.8}],
+                "r1": [{"type": "noul", "noul": 0.2}],
+            }
+        )
+    )
+
+    with use(driver):
+        result = pipe_example.judge_lines(
+            "is this actionable?", ["error: missing file", "progress: 10%"], OfflineBackend()
+        )
+
+    assert [row["verdict"] for row in result] == ["KEEP", "DROP"]
+    assert len(driver.trace) == 1
+    question = driver.trace[0]["questions"]["r0"]["instructions"]
+    assert question["record"]["line"] == "error: missing file"
+
+
+def test_choose_from_supports_described_vector_routes():
+    routes = {
+        "billing": vector(urgent=noul("Reply within the hour?") >= 0.5),
+        "spam": lambda state: {"action": "drop"},
+    }
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "c": [{
+                    "type": "choice",
+                    "choice": "billing",
+                    "probabilities": {"billing": 0.9, "spam": 0.1},
+                    "confidence": 0.8,
+                }],
+                "q0": [{"type": "noul", "noul": 0.9}],
+            }
+        )
+    )
+
+    with use(driver):
+        route, filled = choose_from(
+            "ticket",
+            routes,
+            descriptions={"billing": {"what": "Charges and refunds"}},
+        )
+
+    assert route == "billing"
+    assert filled.urgent is True
+    assert len(driver.trace) == 2
+    assert driver.trace[0]["questions"]["c"]["criteria"]["billing"] == {
+        "what": "Charges and refunds"
+    }
+    assert set(driver.trace[1]["questions"]) == {"q0"}

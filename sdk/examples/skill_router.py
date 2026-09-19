@@ -10,17 +10,17 @@ from __future__ import annotations
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import ask
 from jevx.py import case
 from jevx.py import feels
+from jevx.py import noul
 from jevx.py import pick
+from jevx.py import vector
 
-
-class Gates(Questions):
-    acts: bool = ask("must the assistant act on files/accounts/services, not just explain?")
-    procedure: bool = ask("would an expert consult a documented procedure?")
-    prose_ok: bool = ask("could a generalist satisfy this in prose with no tools?")
+GATES = vector(
+    acts=noul("must the assistant act on files/accounts/services, not just explain?"),
+    procedure=noul("would an expert consult a documented procedure?"),
+    prose_ok=noul("could a generalist satisfy this in prose with no tools?"),
+)
 
 
 @ensure(
@@ -51,9 +51,10 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
         {s["name"]: s["description"] for s in skills},
         client=s1,
     )
-    g = Gates(client=s1).ask({"request": request})  # 1 request
+    g = GATES.ask({"request": request}, client=s1)  # 1 request
     gate_result = case[
-        (not g.acts and g.prose_ok) or (not g.procedure and g.prose_ok) : {
+        (g.acts < 0.5 and g.prose_ok >= 0.5)
+        or (g.procedure < 0.5 and g.prose_ok >= 0.5): {
             "skill": None,
             "why": "gates closed",
         },

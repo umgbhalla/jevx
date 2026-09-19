@@ -59,7 +59,7 @@ def handle(ticket: str, backend: Backend | None = None) -> dict:
     clean = redact(ticket)
     t = TRIAGE.ask(clean, client=s1)  # 1 request: three named judgments
     p_urgent = float(t.urgent)
-    if (t.confidence("team") or 0.0) < 0.6 or 0.35 <= p_urgent <= 0.70:
+    if t.team.confidence < 0.6 or 0.35 <= p_urgent <= 0.70:
         return {"action": HUMAN, "why": "low triage confidence"}
     if t.autoreply_ok >= 0.75:
         return {"action": "send-template", "text": TEMPLATES[t.team.choice], "triage": t}

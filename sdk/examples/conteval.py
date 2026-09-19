@@ -40,7 +40,7 @@ def judge_run(run: dict, backend: Backend | None = None) -> dict:
     sev = float(j.severity)
     confs = [
         c
-        for c in (j.confidence("severity"), j.verdict.confidence, j.failmode.confidence)
+        for c in (j.severity.confidence, j.verdict.confidence, j.failmode.confidence)
         if c is not None
     ]
     conf = min(confs) if confs else 0.5  # Nouls carry no confidence; don't let them zero it

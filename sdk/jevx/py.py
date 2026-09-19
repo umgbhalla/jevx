@@ -850,6 +850,13 @@ class Result:
         except KeyError:
             raise AttributeError(name) from None
 
+    def __getitem__(self, name: str) -> Any:
+        """Read a named result dynamically when the battery is built at runtime."""
+        try:
+            return object.__getattribute__(self, "_values")[name]
+        except KeyError:
+            raise KeyError(name) from None
+
     def __setattr__(self, name: str, value: Any) -> None:
         raise TypeError("Result is immutable — re-evaluate instead")
 
@@ -964,24 +971,33 @@ def choose_from(
     state: Any,
     routes: dict[str, Any],
     *,
+    descriptions: Mapping[str, JSONContent] | None = None,
     instructions: JSONContent = "Which route does this call for?",
     client: Client | None = None,
 ) -> tuple[str, Any]:
     """Union dispatch: one route question, then fill only the winner.
 
-    routes: name -> Questions subclass (filled in a second request with only
-    its questions) | callable(state) (run directly, no second request).
+    routes: name -> Questions subclass or Vector (filled in a second request
+    with only its questions) | callable(state) (run directly, no second request).
     Returns (name, filled Result | callable return).
     """
+    options = {
+        name: (descriptions or {}).get(name)
+        or getattr(route, "__doc__", None)
+        or name
+        for name, route in routes.items()
+    }
     c = pick(
         instructions,
         state,
-        {n: getattr(r, "__doc__", None) or n for n, r in routes.items()},
+        options,
         client=client,
     )
     winner = routes[c.choice]
     if isinstance(winner, type) and issubclass(winner, Questions):
         return c.choice, winner(client=client).ask(state)
+    if isinstance(winner, Vector):
+        return c.choice, winner.ask(state, client=client)
     return c.choice, winner(state)
 
 

@@ -75,8 +75,24 @@ destination = case[
 handlers[destination](ticket)  # Only the selected external action runs.
 ```
 
-`vector()` is a named battery over one shared state. It does not map over
-collections; use an explicit loop when every row needs its own state.
+`vector()` is a named battery over one shared state. For row-wise judgments,
+use `Table`: it binds each row to its own question, puts shared context in the
+request state, batches up to 20 rows per request, and caches results for
+threshold filtering.
+
+```python
+from jevx import Table
+
+rows = Table(tests, client=s1, context={"diff": diff[:4000]})
+affected = rows.noul({"question": "Could this diff affect behavior verified by this test?"})
+must_run = rows.where(
+    {"question": "Could this diff affect behavior verified by this test?"},
+    threshold=0.30,
+)  # Reuses `affected`; it does not ask again.
+review = [
+    test for test, p in zip(tests, affected, strict=True) if 0.30 <= p < 0.70
+]
+```
 
 Question instructions, option descriptions, score levels, and Noul outcomes can
 be JSON objects or arrays. Keep their parts labeled instead of flattening them

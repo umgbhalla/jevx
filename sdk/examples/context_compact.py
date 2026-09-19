@@ -7,10 +7,13 @@ of what was dropped.
 
 from __future__ import annotations
 
+from typing import Any
+
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import feels
+from jevx.py import case
+from jevx.relational import Table
 
 
 @ensure(
@@ -22,17 +25,24 @@ def compact(
 ) -> dict:
     """exchanges: [{role, content}]. Returns kept list + drop stats."""
     s1 = (backend or Live()).s1()
-    kept, dropped = [], []
-    for i, ex in enumerate(exchanges):
-        p = feels(
-            "is this exchange still needed for the goal?",
-            {"goal": goal, "exchange": ex, "index": i, "total": len(exchanges)},
-            client=s1,
-        )
-        if float(p) >= keep_at:
-            kept.append(ex)
-        else:
-            dropped.append({"index": i, "prob": float(p), "preview": ex["content"][:120]})
+    rows: list[dict[str, Any]] = [
+        {"index": i, "exchange": exchange} for i, exchange in enumerate(exchanges)
+    ]
+    scores = Table(rows, client=s1, context={"goal": goal, "total": len(rows)}).noul(
+        {"question": "Is this exchange still needed to complete the goal?"},
+        true={"what": "The exchange contains information needed for a correct next action."},
+        false={"what": "The exchange is stale or irrelevant to the current goal."},
+    )
+    buckets = [
+        case[p >= keep_at: "keep", ...: "drop"].ask({})
+        for p in scores
+    ]
+    kept = [row["exchange"] for row, bucket in zip(rows, buckets, strict=True) if bucket == "keep"]
+    dropped = [
+        {"index": row["index"], "prob": float(p), "preview": row["exchange"]["content"][:120]}
+        for row, p, bucket in zip(rows, scores, buckets, strict=True)
+        if bucket == "drop"
+    ]
     return {
         "kept": kept,
         "dropped": dropped,

@@ -10,13 +10,12 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Literal
 
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import choice
+from jevx.py import vector
 
 
 @dataclass
@@ -56,10 +55,15 @@ class SimMarket:
         return o
 
 
-class Direction(Questions):
-    direction: Literal["buy", "sell"] = ask(
-        "will price be higher or lower than mid after the horizon, by more than spread?"
+Direction = vector(
+    direction=choice(
+        "Will price be higher or lower than mid after the horizon, by more than spread?",
+        {
+            "buy": "Price rises by more than the spread.",
+            "sell": "Price falls by more than the spread.",
+        },
     )
+)
 
 
 def allowed(m: SimMarket, side: str, qty: float, max_pos: float, dry: bool) -> tuple[bool, str]:
@@ -103,8 +107,8 @@ def run(
             "position": market.position,
             "horizon": horizon,
         }
-        d = Direction(client=s1).ask(state)  # 1 request
-        side = d.direction
+        d = Direction.ask(state, client=s1)  # 1 request
+        side = d.direction.choice
         ok, why = allowed(market, side, qty, max_pos, dry)
         if ok and why != "dry-run":
             px = book["mid"] + (-book["spread"] if side == "buy" else book["spread"])
@@ -113,7 +117,7 @@ def run(
             {
                 "tick": book["tick"],
                 "side": side,
-                "prob": d.answers["direction"].probabilities[side],
+                "prob": d.direction.probabilities[side],
                 "allowed": ok,
                 "why": why,
             }

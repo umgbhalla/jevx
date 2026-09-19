@@ -18,6 +18,9 @@ from .fx import use
 from .py import P
 from .py import Predicate
 from .py import Questions
+from .py import Result
+from .py import Rule
+from .py import Vector
 from .py import _freeze
 from .py import pick as _pick
 from .questions import JSONContent
@@ -108,6 +111,12 @@ class TaskRun:
     @overload
     def ask[StateT](self, predicate: Predicate[StateT], state: StateT) -> P: ...
 
+    @overload
+    def ask(self, battery: Vector, state: Any) -> Result: ...
+
+    @overload
+    def ask(self, rule: Rule, state: Any) -> bool: ...
+
     def ask(self, operation: Any, state: Any) -> Any:
         if isinstance(operation, type) and issubclass(operation, Questions):
 
@@ -122,9 +131,23 @@ class TaskRun:
                 return operation.ask(state)
 
             kind = "jev.predicate"
-            summary = repr(operation)
+            summary = "fuzzy judgment expression"
+        elif isinstance(operation, Rule):
+
+            def invoke():
+                return operation.ask(state)
+
+            kind = "jev.rule"
+            summary = "threshold rule"
+        elif isinstance(operation, Vector):
+
+            def invoke():
+                return operation.ask(state)
+
+            kind = "jev.vector"
+            summary = ", ".join(operation.fields)
         else:
-            raise TypeError("run.ask() expects a Questions class or Predicate")
+            raise TypeError("run.ask() expects a Questions class, Vector, Predicate, or Rule")
         trace = TraceDriver(LiveDriver(self._s1))
         with use(trace):
             result = invoke()
@@ -150,7 +173,11 @@ class TaskRun:
         row = trace.trace[-1]
         self.record(
             "jev.pick",
-            summary=f"{question}: {result.choice}",
+            summary=(
+                f"{question[:80]} -> {result.choice}"
+                if isinstance(question, str)
+                else f"structured choice -> {result.choice}"
+            ),
             state=row["state"],
             questions=row["questions"],
             answers={key: _freeze(value) for key, value in row["answers"].items()},

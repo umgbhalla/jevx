@@ -11,22 +11,27 @@ import sys
 
 from jevx.backends import Backend
 from jevx.backends import Live
+from jevx.py import case
+from jevx.relational import Table
 
 
 def judge_lines(
     question: str, lines: list[str], backend: Backend | None = None, keep_at: float = 0.5
 ) -> list[dict]:
-    from jevx.py import feels
-
     s1 = (backend or Live()).s1()
-    out = []
-    for i, line in enumerate(lines):
-        try:
-            p = float(feels(question, {"line": line, "index": i}, client=s1))
-        except Exception as e:
-            return [{"error": str(e)}]
-        out.append({"line": line, "prob": p, "verdict": "KEEP" if p >= keep_at else "DROP"})
-    return out
+    rows = [{"line": line, "index": i} for i, line in enumerate(lines)]
+    try:
+        scores = Table(rows, client=s1).noul(question)
+    except Exception as e:
+        return [{"error": str(e)}]
+    return [
+        {
+            "line": row["line"],
+            "prob": float(score),
+            "verdict": case[score >= keep_at: "KEEP", ...: "DROP"].ask({}),
+        }
+        for row, score in zip(rows, scores, strict=True)
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:

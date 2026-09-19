@@ -107,7 +107,7 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
         if t.escalate >= 0.5:
             return {"result": "escalated", "obs": obs}
         v = t.verb.choice
-        if t.confidence("verb") < FLOORS[v]:
+        if t.verb.confidence < FLOORS[v]:
             continue  # below floor: hold position this tick (not counted as repeat)
         if v == last:
             repeats += 1

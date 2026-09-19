@@ -13,6 +13,8 @@ import json
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
+from jevx.py import noul
+from jevx.py import vector
 
 
 def load_prefs(path: str) -> dict:
@@ -28,24 +30,28 @@ def review_diff(
     prefs: dict, hunks: list[dict], backend: Backend | None = None, bar: float = 0.70
 ) -> dict:
     """hunks: [{file, hunk}]. One batched request for all rule x hunk pairs."""
-    import hashlib as _h
-
-    from jevx.py import _decide
-    from jevx.questions import Noul
-
     s1 = (backend or Live()).s1()
-    qs, keys = {}, []
+    checks, keys = {}, {}
     for rname, rule in prefs.items():
         for h in hunks:
-            tag = _h.sha1(f"{rname}\n{h['file']}\n{h['hunk']}".encode()).hexdigest()[:8]
-            qid = f"{rname}::{h['file']}::{tag}"
-            qs[qid] = Noul(instructions=f"Does this hunk violate the rule: {rule}?")
-            keys.append((qid, rname, h))
-    out = _decide({"rules": prefs}, qs, s1)
+            qid = f"check_{len(keys)}"
+            checks[qid] = noul(
+                {
+                    "question": "Does this diff hunk violate the preference?",
+                    "preference": {"name": rname, "rule": rule},
+                    "change": {"file": h["file"], "hunk": h["hunk"]},
+                },
+                true={"what": "The change violates the preference."},
+                false={"what": "The change follows the preference."},
+            )
+            keys[qid] = (rname, h)
+    if not checks:
+        return {"violations": [], "action": "pass", "checked": 0}
+    out = vector(**checks).ask({"task": "Review each diff hunk against its named preference."}, client=s1)
     violations = [
-        {"rule": r, "file": h["file"], "hunk": h["hunk"][:500], "prob": float(out[q].noul)}
-        for q, r, h in keys
-        if float(out[q].noul) >= bar
+        {"rule": rule, "file": hunk["file"], "hunk": hunk["hunk"][:500], "prob": float(out[qid])}
+        for qid, (rule, hunk) in keys.items()
+        if out[qid] >= bar
     ]
     return {
         "violations": violations,

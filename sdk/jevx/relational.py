@@ -15,6 +15,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from .client import Client
+from .py import P
+from .py import _decide
 from .questions import Choice
 from .questions import JSONContent
 from .questions import Noul
@@ -28,10 +30,6 @@ def _key(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _instructions(value: JSONContent, suffix: str) -> JSONContent:
-    return f"{value}{suffix}" if isinstance(value, str) else value
-
-
 def _h(row: dict) -> str:
     return hashlib.sha1(json.dumps(row, sort_keys=True, default=str).encode()).hexdigest()
 
@@ -39,24 +37,26 @@ def _h(row: dict) -> str:
 class Table:
     """rows: list of JSON-able dicts. Judgments cached by (question, kind, options, row-hash)."""
 
-    def __init__(self, rows: list[dict], client: Client | None = None):
+    def __init__(self, rows: list[dict], client: Client | None = None, *, context: Any = None):
         self.rows = rows
         self._client = client
+        self.context = context
         self._cache: dict = {}
         self.stats = {"requests": 0, "judged": 0, "cache_hits": 0}
 
     def _batch(self, items: list[tuple[int, dict, Any]]) -> None:
         if not items:
             return
-        c = self._client or Client()
         for i in range(0, len(items), BATCH):
             chunk = items[i : i + BATCH]
             qs = {f"r{j}": q._b for j, (_, _, q) in enumerate(chunk)}
-            resp = c.system_one({"rows": [row for _, row, _ in chunk]}, qs)
+            state = {"batch_size": len(chunk)}
+            if self.context is not None:
+                state["context"] = self.context
+            answers = _decide(state, qs, self._client)
             self.stats["requests"] += 1
             for j, (idx, row, q) in enumerate(chunk):
-                a = resp.answers[f"r{j}"]
-                self._cache[(q.key, _h(row))] = a
+                self._cache[(q.key, _h(row))] = answers[f"r{j}"]
                 self.stats["judged"] += 1
 
     def _hits(self, key: tuple, rows: list[dict]) -> int:
@@ -66,19 +66,33 @@ class Table:
 
     def where(self, condition: JSONContent, threshold: float = 0.5) -> list[dict]:
         """[r for r in rows if P(condition about r) >= threshold]. One batched pass."""
-        key = ("noul", _key(condition))
-        instructions = (
-            f"Does this record satisfy: {condition}?"
-            if isinstance(condition, str)
-            else {"question": "Does this record satisfy the criterion?", "criterion": condition}
-        )
+        scores = self.noul(condition)
+        return [row for row, score in zip(self.rows, scores, strict=True) if score >= threshold]
+
+    def noul(
+        self,
+        instructions: JSONContent,
+        *,
+        true: JSONContent | None = None,
+        false: JSONContent | None = None,
+    ) -> list[P]:
+        """Judge each row once, embedding that row in its question, in batches."""
+        key = ("noul", _key((instructions, true, false, self.context)))
+        criteria = {"true": true, "false": false} if true is not None or false is not None else None
         missing = [
             (
                 i,
                 r,
                 _Q(
                     key,
-                    Noul(instructions=instructions),
+                    Noul(
+                        instructions={
+                            "question": "Does this record satisfy the condition?",
+                            "condition": instructions,
+                            "record": r,
+                        },
+                        criteria=criteria,
+                    ),
                 ),
             )
             for i, r in enumerate(self.rows)
@@ -86,7 +100,7 @@ class Table:
         ]
         self._batch(missing)
         self._hits(key, self.rows)
-        return [r for r in self.rows if self._cache[(key, _h(r))].noul >= threshold]
+        return [P(self._cache[(key, _h(r))].noul) for r in self.rows]
 
     def order_by(
         self,
@@ -96,15 +110,22 @@ class Table:
         descending: bool = True,
     ) -> list[dict]:
         """Score every row once, sort by score. (No early-stop: all rows judged.)"""
-        key = ("score", _key(question), _key(levels))
+        key = ("score", _key((question, levels, self.context)))
         missing = [
             (
                 i,
                 r,
-                _Q(
-                    key,
-                    Score(instructions=_instructions(question, "?"), criteria=list(levels)),
-                ),
+                    _Q(
+                        key,
+                        Score(
+                            instructions={
+                                "question": "Score this record against the requested criterion.",
+                                "criterion": question,
+                                "record": r,
+                            },
+                            criteria=list(levels),
+                        ),
+                    ),
             )
             for i, r in enumerate(self.rows)
             if (key, _h(r)) not in self._cache
@@ -122,12 +143,22 @@ class Table:
         options: Mapping[str, JSONContent | None],
     ) -> dict[str, list[dict]]:
         """Choice per row, grouped. Must score all rows — no early-stop."""
-        key = ("choice", _key(question), _key(options))
+        key = ("choice", _key((question, options, self.context)))
         missing = [
             (
                 i,
                 r,
-                _Q(key, Choice(instructions=_instructions(question, "?"), criteria=dict(options))),
+                _Q(
+                    key,
+                    Choice(
+                        instructions={
+                            "question": "Classify this record using the requested categories.",
+                            "question_context": question,
+                            "record": r,
+                        },
+                        criteria=dict(options),
+                    ),
+                ),
             )
             for i, r in enumerate(self.rows)
             if (key, _h(r)) not in self._cache

@@ -1,43 +1,41 @@
 """Union dispatch: one route question fills only the winner's battery.
 
-BillingQs | BugQs | AccountQs as S1-fillable routes, plus a plain callable
+Billing, bug, and account vectors are S1-fillable routes, plus a plain callable
 route (no second request). Surrogate fast-path included: confident
 auto-handling skips the worker; unsure work goes to Codex and logs traces.
 """
 
 from __future__ import annotations
 
-from typing import Literal
-
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.programs import surrogate
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
 from jevx.py import choose_from
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
 
-
-class BillingQs(Questions):
-    """Triage a billing ticket."""
-
-    urgent: bool = ask("reply within the hour?")
-    refund_ok: bool = ask("is a no-questions refund within policy?", threshold=0.8)
-
-
-class BugQs(Questions):
-    """Triage a bug report."""
-
-    repro: bool = ask("does the report reproduce the bug?")
-    severity: Score[Literal["cosmetic", "annoying", "blocking"]] = ask("how severe?")
-
-
-class AccountQs(Questions):
-    """Triage an account request."""
-
-    verified: bool = ask("is the requester identity verified?", threshold=0.8)
-
+ROUTES = {
+    "billing": vector(
+        urgent=noul("Reply within the hour?") >= 0.5,
+        refund_ok=noul("Is a no-questions refund within policy?") >= 0.8,
+    ),
+    "bug": vector(
+        repro=noul("Does the report reproduce the bug?"),
+        severity=score("How severe?", ("cosmetic", "annoying", "blocking")),
+    ),
+    "account": vector(
+        verified=noul("Is the requester identity verified?") >= 0.8,
+    ),
+    "spam": lambda state: {"action": "drop"},
+}
+ROUTE_DESCRIPTIONS = {
+    "billing": "Charges, invoices, refunds, and subscriptions.",
+    "bug": "Crashes, defects, and unexpected behavior.",
+    "account": "Login, profile, and account access.",
+    "spam": "Spam or irrelevant messages.",
+}
 
 CALIB: list = []
 CALIB_MAX = 1000
@@ -63,12 +61,8 @@ def dispatch(ticket: str, backend: Backend | None = None) -> dict:
     bk = backend or Live()
     name, filled = choose_from(
         ticket,
-        {
-            "billing": BillingQs,
-            "bug": BugQs,
-            "account": AccountQs,
-            "spam": lambda state: {"action": "drop"},
-        },
+        ROUTES,
+        descriptions=ROUTE_DESCRIPTIONS,
         instructions="Which ticket handler does this call for?",
         client=bk.s1(),
     )

@@ -18,8 +18,9 @@ from jevx.contracts import ensure
 from jevx.programs import assess_due
 from jevx.programs import session
 from jevx.programs import tail
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import Result
+from jevx.py import noul
+from jevx.py import vector
 
 # thresholds (FactoryPolicy order matters: human -> stuck/off-track -> finish -> verify)
 T_HUMAN, T_STUCK, T_OFF, T_FINISH, T_REQ, T_TESTS, T_IMPL, T_VERIFY = (
@@ -36,40 +37,35 @@ MAX_ITERS, MAX_RETRIES, MAX_STEERS = 20, 1, 1
 MIN_INTERVAL, PERIODIC, TAIL, MAX_EVENTS = 5.0, 30.0, 12000, 30
 
 
-class Assess(Questions):
-    implementation_complete: bool = ask(
-        "Is the implementation work required by the original job complete?", threshold=T_IMPL
-    )
-    tests_sufficient: bool = ask(
-        "Does the work have sufficient relevant test coverage and passing verification?",
-        threshold=T_TESTS,
-    )
-    requirements_satisfied: bool = ask(
-        "Does the current repository satisfy the original free-form job as a whole?",
-        threshold=T_REQ,
-    )
-    needs_verification: bool = ask(
-        "Does the current state warrant an independent verification pass before finishing?",
-        threshold=T_VERIFY,
-    )
-    meaningful_progress: bool = ask(
+ASSESS = vector(
+    implementation_complete=noul(
+        "Is the implementation work required by the original job complete?"
+    ),
+    tests_sufficient=noul(
+        "Does the work have sufficient relevant test coverage and passing verification?"
+    ),
+    requirements_satisfied=noul(
+        "Does the current repository satisfy the original free-form job as a whole?"
+    ),
+    needs_verification=noul(
+        "Does the current state warrant an independent verification pass before finishing?"
+    ),
+    meaningful_progress=noul(
         "Is the active or most recent worker making meaningful progress toward the job?"
-    )
-    worker_stuck: bool = ask(
-        "Does the active or most recent worker appear stuck, looping, or unable to advance?",
-        threshold=T_STUCK,
-    )
-    work_off_track: bool = ask(
-        "Is the current work drifting from the original job or making unrelated changes?",
-        threshold=T_OFF,
-    )
-    ready_to_finish: bool = ask(
-        "Given all evidence, is the factory job ready to be declared complete?", threshold=T_FINISH
-    )
-    needs_human: bool = ask(
-        "Does this situation require human judgment, credentials, clarification, or permission?",
-        threshold=T_HUMAN,
-    )
+    ),
+    worker_stuck=noul(
+        "Does the active or most recent worker appear stuck, looping, or unable to advance?"
+    ),
+    work_off_track=noul(
+        "Is the current work drifting from the original job or making unrelated changes?"
+    ),
+    ready_to_finish=noul(
+        "Given all evidence, is the factory job ready to be declared complete?"
+    ),
+    needs_human=noul(
+        "Does this situation require human judgment, credentials, clarification, or permission?"
+    ),
+)
 
 
 IMPORTANT = {"WORKER_COMPLETED", "WORKER_FAILED", "WORKER_STOPPED", "VERIFICATION_COMPLETED"}
@@ -99,44 +95,26 @@ def build_steer(progress: float, stuck: float, off_track: float, events: list[st
     )
 
 
-def _p(ans) -> float:
-    return float(ans.noul)
-
-
 @ensure(
     lambda *a, result=None, **k: (
         result in ("ESCALATE", "STEER", "RETRY", "FINISH", "START_VERIFIER", "CONTINUE")
     ),
     "action is a known FactoryAction",
 )
-def decide(a: dict, steers_used: int, retries_used: int, verified: bool) -> str:
-    need = {
-        "needs_human",
-        "worker_stuck",
-        "work_off_track",
-        "ready_to_finish",
-        "requirements_satisfied",
-        "tests_sufficient",
-        "implementation_complete",
-        "needs_verification",
-        "meaningful_progress",
-    }
-    missing = need - set(a)
-    if missing:
-        raise ValueError(f"decide() missing assessments: {sorted(missing)}")
-    if a["needs_human"] >= T_HUMAN:
+def decide(a: Result, steers_used: int, retries_used: int, verified: bool) -> str:
+    if a.needs_human >= T_HUMAN:
         return "ESCALATE"
-    if a["worker_stuck"] >= T_STUCK or a["work_off_track"] >= T_OFF:
+    if a.worker_stuck >= T_STUCK or a.work_off_track >= T_OFF:
         if steers_used < MAX_STEERS:
             return "STEER"
         return "RETRY" if retries_used < MAX_RETRIES else "ESCALATE"
     if (
-        a["ready_to_finish"] >= T_FINISH
-        and a["requirements_satisfied"] >= T_REQ
-        and a["tests_sufficient"] >= T_TESTS
-        and a["implementation_complete"] >= T_IMPL
+        a.ready_to_finish >= T_FINISH
+        and a.requirements_satisfied >= T_REQ
+        and a.tests_sufficient >= T_TESTS
+        and a.implementation_complete >= T_IMPL
     ):
-        if a["needs_verification"] >= T_VERIFY and not verified:
+        if a.needs_verification >= T_VERIFY and not verified:
             return "START_VERIFIER"
         return "FINISH"
     return "CONTINUE"
@@ -215,29 +193,13 @@ def supervise(
             last_assess = now
             obs = build_observation(task, events, prior)
             try:
-                w = Assess(client=s1).ask(obs)  # 1 request, 9 Nouls
+                w = ASSESS.ask(obs, client=s1)  # 1 request, 9 Nouls
             except Exception as e:
                 return {"action": "ESCALATE", "why": f"S1 error: {e}"}
-            try:
-                a = {
-                    k: _p(w.answers[k])
-                    for k in (
-                        "implementation_complete",
-                        "tests_sufficient",
-                        "requirements_satisfied",
-                        "needs_verification",
-                        "meaningful_progress",
-                        "worker_stuck",
-                        "work_off_track",
-                        "ready_to_finish",
-                        "needs_human",
-                    )
-                }
-            except (KeyError, TypeError, ValueError) as e:
-                return {"action": "ESCALATE", "why": f"S1 shape error: {e}"}
+            a = {key: float(value) for key, value in w.as_dict().items()}
             log({"kind": "ASSESS", "probs": a})
             prior = f"ready={a['ready_to_finish']:.2f} stuck={a['worker_stuck']:.2f}"
-            act = decide(a, steers, retries, verified)
+            act = decide(w, steers, retries, verified)
             log({"kind": act})
 
             if act == "FINISH":
