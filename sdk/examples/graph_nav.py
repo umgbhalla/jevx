@@ -66,7 +66,7 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
         "goal": goal,
     }
     if not nbrs:
-        r = Hop(client=s1)({"state": state, "edges": []})
+        r = Hop(client=s1).ask({"state": state, "edges": []})
         return [], bool(r.reached)
     keys, crit = [], {}
     for i, e in enumerate(nbrs):
@@ -85,7 +85,7 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
     order = sorted(c.probabilities.items(), key=lambda kv: -kv[1])
     by_key = {k: e for k, e in keys}
     branches = [(p, by_key[k]) for k, p in order if k in by_key]  # drop off-list keys
-    r = Hop(client=s1)({**state, "picked": c.choice})
+    r = Hop(client=s1).ask({**state, "picked": c.choice})
     return branches, bool(r.reached)
 
 

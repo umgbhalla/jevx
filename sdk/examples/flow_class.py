@@ -52,7 +52,7 @@ class Flow(Uses(_DEMO)):
     """Same run() works under Uses(Live()): swap one base, nothing else."""
 
     def run(self, ticket: str) -> dict:
-        t = Triage(client=self.make_s1())(ticket)
+        t = Triage(client=self.make_s1()).ask(ticket)
         if t.confidence("team") < 0.6:
             return {"action": "route:human"}
         return {"action": f"route:{t.team}", "urgent": t.urgent}

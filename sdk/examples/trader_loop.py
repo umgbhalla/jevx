@@ -103,7 +103,7 @@ def run(
             "position": market.position,
             "horizon": horizon,
         }
-        d = Direction(client=s1)(state)  # 1 request
+        d = Direction(client=s1).ask(state)  # 1 request
         side = d.direction
         ok, why = allowed(market, side, qty, max_pos, dry)
         if ok and why != "dry-run":

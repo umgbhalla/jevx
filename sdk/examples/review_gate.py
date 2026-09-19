@@ -55,7 +55,7 @@ class Profile(Questions):
     category: Literal[
         "behavior", "interface", "infrastructure", "observability", "refactor", "routine"
     ] = ask("Which category best describes the patch?")
-    priority: Score["low", "notable", "high", "urgent"] = ask(
+    priority: Score[Literal["low", "notable", "high", "urgent"]] = ask(
         "Rate how closely a human should review the patch."
     )
 
@@ -73,7 +73,7 @@ class Finding(Questions):
     ] = ask(
         "Which mechanism best describes the suspected concern supported by the selected evidence?"
     )
-    severity: Score["cosmetic", "notable", "high", "blocking"] = ask(
+    severity: Score[Literal["cosmetic", "notable", "high", "blocking"]] = ask(
         "Assuming the evidence exhibits the concern, rate the likely production impact."
     )
     owner: Literal["security", "api", "runtime", "testing", "maintainer"] = ask(
@@ -102,13 +102,13 @@ def review(pr: dict, backend: Backend | None = None) -> dict:
     for f in pr["files"]:
         if followed >= MAX_FOLLOW_UPS or profiled >= MAX_PROFILES:
             break
-        m = Screen(client=s1)(
+        m = Screen(client=s1).ask(
             {"patch": f["patch"][:3000], "changed_tests": f.get("changed_tests", [])}
         )  # 1 req
         if not (m.correctness or m.security or m.reliability or m.compatibility or m.test_gap):
             continue
         followed += 1
-        p = Profile(client=s1)({"patch": f["patch"][:3000]})  # 1 req
+        p = Profile(client=s1).ask({"patch": f["patch"][:3000]})  # 1 req
         prio = float(p.priority) + (0.5 if _is_sec(f["path"]) else 0.0)
         if prio < 1.0:
             continue
@@ -123,7 +123,7 @@ def review(pr: dict, backend: Backend | None = None) -> dict:
             )
             if ev == "noMatch" or ev_conf < LOCATE_AT:
                 continue
-            fin = Finding(client=s1)({"hunk": hunk, "path": f["path"]})  # 1 req
+            fin = Finding(client=s1).ask({"hunk": hunk, "path": f["path"]})  # 1 req
             if fin.mechanism == "no_issue":
                 continue
             sev = float(fin.severity)

@@ -37,7 +37,7 @@ class Tick(Questions):
         "noop", "right", "right_jump", "right_run", "right_run_jump", "jump", "left"
     ] = ask("Which controller macro should commit next?")
     jump_needed: bool = ask("Should a forward jump begin or remain held now?")
-    danger: Score["safe", "caution", "threat"] = ask("How dangerous is the immediate situation?")
+    danger: Score[Literal["safe", "caution", "threat"]] = ask("How dangerous is the immediate situation?")
 
 
 @dataclass
@@ -130,7 +130,7 @@ def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
     trace = []
     for _ in range(max_ticks):
         snap = world.snapshot()
-        t = Tick(client=s1)(snap)  # 1 request: Choice + Noul + Score
+        t = Tick(client=s1).ask(snap)  # 1 request: Choice + Noul + Score
         a = t.action
         if world.air > 0 and a in JUMP_HOLD:  # hold continuation: don't drop the jump mid-air
             a = {"right_jump": "right_jump", "right_run_jump": "right_run_jump"}.get(a, a)

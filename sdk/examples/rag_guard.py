@@ -32,7 +32,7 @@ class Gate(Questions):
 
 
 def route_passage(p: dict, s1) -> str:
-    g = Gate(client=s1)(p)  # 1 request
+    g = Gate(client=s1).ask(p)  # 1 request
     if g.injection:
         return "exclude-injection"
     if g.contradicts:

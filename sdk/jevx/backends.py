@@ -5,14 +5,14 @@
 
     def handle(ticket, backend=None):
         bk = backend or Live()
-        t = Triage(client=bk.s1())(ticket)
+        t = Triage(client=bk.s1()).ask(ticket)
         draft = bk.s2().ask(...)
 
 Class-composition form via __mro_entries__:
 
     class Flow(Uses(Sim(...))):
         def run(self, ticket):
-            t = Triage(client=self.make_s1())(ticket)
+            t = Triage(client=self.make_s1()).ask(ticket)
 """
 
 from __future__ import annotations
@@ -80,9 +80,8 @@ class Uses:
         self.backend = backend
 
     def __mro_entries__(self, bases: tuple) -> tuple:
-        for b in bases:
-            if isinstance(b, Uses):
-                raise TypeError("one Uses() per class: make_s1/make_s2 would collide")
+        if any(isinstance(b, Uses) and b is not self for b in bases):
+            raise TypeError("one Uses() per class: make_s1/make_s2 would collide")
         backend = self.backend
 
         class _M:
@@ -93,4 +92,4 @@ class Uses:
                 return backend.s2()
 
         _M.__name__ = f"Uses[{type(backend).__name__}]"
-        return (_M,) + tuple(bases)
+        return (_M,)

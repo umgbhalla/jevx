@@ -1,26 +1,30 @@
 """Idiomatic Jev: judgments as Python grammar.
 
-``feels`` asks yes/no, ``pick`` chooses, ``rate`` scores — all in ONE request
-per state when batched. Pattern-match answers, combine probabilities with
-operators, declare batteries as classes, gate functions, replay runs offline.
+``feels`` asks yes/no, ``pick`` chooses, ``rate`` scores. ``noul`` builds a
+lazy predicate tree: ``urgent & ~unsafe`` batches both leaves in one request.
+Pattern-match typed answers, declare typed batteries, and keep policy in Python.
 
-    from jevx.py import feels, pick, Questions, ask, gate
+    from jevx.py import feels, pick, Questions, ask, gate, noul
+    from jevx.answers import ChoiceAnswer
+    from jevx.py import Score
+    from typing import Literal
 
-    if feels("is this urgent?", ticket).over(0.8):
+    if (noul("is this urgent?") & ~noul("does this expose private data?")).ask(ticket).over(0.8):
         escalate(ticket)
 
     match pick("which team?", ticket, {"billing": "...", "bug": "..."}):
-        case Choice(choice="billing", confidence=c) if c > 0.9:
+        case ChoiceAnswer(choice="billing", confidence=c) if c > 0.9:
             bill(ticket)
-        case Choice(choice=team):
+        case ChoiceAnswer(choice=team):
             triage(team, ticket)
 
     class Triage(Questions):
         urgent: bool = ask("reply within the hour?")
         team: Literal["billing", "bug"] = ask("which team owns it?")
-        sev: Score["low", "high"] = ask("how severe?")
+        sev: Score[Literal["low", "high"]] = ask("how severe?")
 
-    t = Triage()(ticket)   # one request; t.urgent is bool, t.team is str
+    t = Triage().ask(ticket)   # one request; t.urgent is bool, t.team is str
+
 """
 
 from __future__ import annotations
@@ -33,13 +37,16 @@ import json
 import sys as _sys
 import typing as _typing
 from collections.abc import Mapping
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 from typing import Literal
+from typing import cast
 from typing import get_args
 from typing import get_origin
 
 from . import fx as _fx
-from .answers import ChoiceAnswer as Choice
+from .answers import ChoiceAnswer
 from .client import Client
 from .questions import Choice as _ChoiceQ
 from .questions import Noul as _NoulQ
@@ -47,8 +54,9 @@ from .questions import Score as _ScoreQ
 
 __all__ = [
     "AmbiguousTruth",
-    "Choice",
+    "ChoiceAnswer",
     "P",
+    "Predicate",
     "Questions",
     "Refused",
     "Result",
@@ -59,6 +67,7 @@ __all__ = [
     "feels",
     "gate",
     "pick",
+    "noul",
     "rate",
     "record",
     "replay",
@@ -83,8 +92,7 @@ class StaleReplay(Exception):
 
 
 class P(float):
-    """A probability 0..1. Fuzzy &, |, ~. Comparisons return bool.
-    Bare bool() raises — pandas-style, ambiguity must be explicit."""
+    """An evaluated fuzzy degree. ``&`` is product; ``|`` is probabilistic sum."""
 
     def __new__(cls, v: float) -> P:
         f = float(v)
@@ -93,11 +101,21 @@ class P(float):
         return super().__new__(cls, f)
 
     def __and__(self, o: float) -> P:
+        if not isinstance(o, (int, float)):
+            return NotImplemented
         return P(float(self) * float(o))
 
+    def __rand__(self, o: float) -> P:
+        return self.__and__(o)
+
     def __or__(self, o: float) -> P:
+        if not isinstance(o, (int, float)):
+            return NotImplemented
         a, b = float(self), float(o)
         return P(a + b - a * b)
+
+    def __ror__(self, o: float) -> P:
+        return self.__or__(o)
 
     def __invert__(self) -> P:
         return P(1.0 - float(self))
@@ -121,11 +139,108 @@ class P(float):
         return "no"
 
 
-class Score(float):
+@dataclass(frozen=True)
+class Predicate[StateT]:
+    """Lazy Noul expression. Operators build a tree; ``ask`` batches its leaves.
+
+    The generic state type helps check the state passed to ``ask``. Operators
+    compose fuzzy degrees; they do not claim statistical independence.
+    """
+
+    op: str
+    question: _NoulQ | None = None
+    left: Predicate[Any] | None = None
+    right: Predicate[Any] | None = None
+
+    def __post_init__(self) -> None:
+        valid = (
+            self.op == "leaf"
+            and self.question is not None
+            and self.left is None
+            and self.right is None
+        ) or (
+            self.op == "not"
+            and self.question is None
+            and self.left is not None
+            and self.right is None
+        ) or (
+            self.op in ("and", "or")
+            and self.question is None
+            and self.left is not None
+            and self.right is not None
+        )
+        if not valid:
+            raise ValueError(f"invalid predicate node {self.op!r}")
+
+    def __and__(self, other: Predicate[StateT]) -> Predicate[StateT]:
+        if not isinstance(other, Predicate):
+            return NotImplemented
+        return Predicate("and", left=self, right=other)
+
+    def __rand__(self, other: Predicate[StateT]) -> Predicate[StateT]:
+        return self.__and__(other)
+
+    def __or__(self, other: Predicate[StateT]) -> Predicate[StateT]:
+        if not isinstance(other, Predicate):
+            return NotImplemented
+        return Predicate("or", left=self, right=other)
+
+    def __ror__(self, other: Predicate[StateT]) -> Predicate[StateT]:
+        return self.__or__(other)
+
+    def __invert__(self) -> Predicate[StateT]:
+        return Predicate("not", left=self)
+
+    def __bool__(self) -> bool:
+        raise AmbiguousTruth("a predicate is unevaluated; call .ask(state).over(threshold)")
+
+    def ask(self, state: StateT, *, client: Client | None = None) -> P:
+        """Evaluate every leaf in one request, then apply the fuzzy operators."""
+        ids: dict[_NoulQ, str] = {}
+
+        def collect(node: Predicate[Any]) -> None:
+            if node.op == "leaf":
+                assert node.question is not None
+                ids.setdefault(node.question, f"q{len(ids)}")
+            else:
+                if node.left is not None:
+                    collect(node.left)
+                if node.right is not None:
+                    collect(node.right)
+
+        collect(self)
+        questions = {qid: question for question, qid in ids.items()}
+        raw = _decide(state, questions, client)
+
+        def evaluate(node: Predicate[Any]) -> P:
+            if node.op == "leaf":
+                assert node.question is not None
+                return P(raw[ids[node.question]].prob)
+            if node.op == "not":
+                assert node.left is not None
+                return ~evaluate(node.left)
+            assert node.left is not None and node.right is not None
+            if node.op == "and":
+                return evaluate(node.left) & evaluate(node.right)
+            if node.op == "or":
+                return evaluate(node.left) | evaluate(node.right)
+            raise ValueError(f"unknown predicate operation {node.op!r}")
+
+        return evaluate(self)
+
+
+def noul(
+    instructions: str, *, true: str | None = None, false: str | None = None
+) -> Predicate[Any]:
+    """Build a lazy yes/no expression. Combine with ``&``, ``|``, and ``~``."""
+    return Predicate("leaf", question=_NoulQ(instructions, true, false))
+
+
+class Score[LevelT: str](float):
     """A spectrum position with its confidence attached."""
 
     confidence: float
-    legend: tuple
+    legend: tuple[LevelT, ...]
 
     def __new__(cls, value: float, *, confidence: float, legend: tuple) -> Score:
         obj = super().__new__(cls, value)
@@ -136,20 +251,16 @@ class Score(float):
     def level(self) -> int:
         return int(round(float(self)))
 
-    @classmethod
-    def __class_getitem__(cls, levels) -> _Levels:
-        if isinstance(levels, str):
-            levels = (levels,)
-        return _Levels(tuple(levels))
-
-
-class _Levels:
-    """Score["low", "high"] in a Questions annotation."""
-
-    def __init__(self, levels: tuple):
-        if len(levels) < 2:
-            raise ValueError("Score needs >= 2 levels")
-        self.levels = levels
+def _score_levels(ann: Any) -> tuple[str, ...] | None:
+    if get_origin(ann) is not Score:
+        return None
+    (levels,) = get_args(ann)
+    if get_origin(levels) is not Literal:
+        raise TypeError("Score needs Literal['low', 'high', ...] levels")
+    values = get_args(levels)
+    if len(values) < 2 or any(not isinstance(v, str) or not v for v in values):
+        raise TypeError("Score needs at least two non-empty string levels")
+    return values
 
 
 # ---------------------------------------------------------------- internals
@@ -201,20 +312,20 @@ def feels(
     false: str | None = None,
     client: Client | None = None,
 ) -> P:
-    """One yes/no judgment -> P. Combine: feels(a) & ~feels(b)."""
+    """Evaluate one yes/no question. Use ``noul`` to batch expressions."""
     (a,) = _decide(state, {"p": _NoulQ(question, true, false)}, client).values()
     return P(a.prob)
 
 
-def pick(
+def pick[ChoiceT: str](
     question: str,
     state: Any,
-    options: Mapping[str, str | None] | list | tuple,
+    options: Mapping[ChoiceT, str | None] | Sequence[ChoiceT],
     *,
     client: Client | None = None,
-) -> Choice:
+) -> ChoiceAnswer[ChoiceT]:
     """One pick-one judgment -> matchable Choice. Match on it."""
-    if isinstance(options, (list, tuple)):
+    if not isinstance(options, Mapping):
         options = {o: None for o in options}
     (a,) = _decide(state, {"c": _ChoiceQ(question, dict(options))}, client).values()
     return a
@@ -232,7 +343,7 @@ def rate(
     return Score(a.score, confidence=a.confidence, legend=tuple(levels))
 
 
-def ask(question: str, *, threshold: float = 0.5) -> _Field:
+def ask(question: str, *, threshold: float = 0.5) -> Any:
     """Declare a battery field inside a Questions class (descriptor)."""
     return _Field(question, threshold)
 
@@ -260,12 +371,12 @@ class _Field:
         self.name = name
 
 
-class Questions:
+class Questions[ResultT]:
     """Declarative battery. Annotations decide the question kind; one request.
 
     bool -> Noul (threshold per field via ask(..., threshold=))
     Literal[...] -> Choice
-    Score["low", "..."] -> Score (raw float position)
+    Score[Literal[...]] -> Score (raw float position)
     """
 
     _fields_: dict[str, _Field] = {}
@@ -287,7 +398,7 @@ class Questions:
     def __init__(self, client: Client | None = None):
         self._client = client
 
-    def __call__(self, state: Any) -> Result:
+    def ask(self, state: Any) -> ResultT:
         hints = _hints(self.__class__)
         qs: dict[str, Any] = {}
         for name, f in self._fields_.items():
@@ -302,12 +413,12 @@ class Questions:
                 values[name] = a.prob >= f.threshold
             elif get_origin(ann) is Literal:
                 values[name] = a.choice
-            elif isinstance(ann, _Levels):
-                values[name] = Score(a.score, confidence=a.confidence, legend=ann.levels)
+            elif (levels := _score_levels(ann)) is not None:
+                values[name] = Score(a.score, confidence=a.confidence, legend=levels)
             else:
                 raise TypeError(f"unsupported annotation for {name}: {ann!r}")
             meta[name] = a
-        return Result(values, meta, self._fields_)
+        return cast(Any, Result(values, meta, self._fields_))
 
 
 def _pytype(ann: Any) -> type:
@@ -316,7 +427,7 @@ def _pytype(ann: Any) -> type:
         return bool
     if get_origin(ann) is Literal:
         return str
-    if isinstance(ann, _Levels):
+    if get_origin(ann) is Score:
         return float
     raise TypeError(f"unsupported annotation: {ann!r}")
 
@@ -326,8 +437,8 @@ def _build(question: str, ann: Any) -> Any:
         return _NoulQ(question)
     if get_origin(ann) is Literal:
         return _ChoiceQ(question, {str(o): None for o in get_args(ann)})
-    if isinstance(ann, _Levels):
-        return _ScoreQ(question, list(ann.levels))
+    if (levels := _score_levels(ann)) is not None:
+        return _ScoreQ(question, list(levels))
     raise TypeError(f"unsupported annotation: {ann!r}")
 
 
@@ -475,7 +586,7 @@ def choose_from(
     )
     winner = routes[c.choice]
     if isinstance(winner, type) and issubclass(winner, Questions):
-        return c.choice, winner(client=client)(state)
+        return c.choice, winner(client=client).ask(state)
     return c.choice, winner(state)
 
 

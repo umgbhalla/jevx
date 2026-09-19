@@ -38,11 +38,11 @@ class Noul:
 
 
 @dataclass(frozen=True)
-class Choice:
+class Choice[ChoiceT: str]:
     """Pick-one question. Max 255 options; include an escape option."""
 
     instructions: str
-    criteria: Mapping[str, str | None]
+    criteria: Mapping[ChoiceT, str | None]
 
     def __post_init__(self) -> None:
         _instructions(self.instructions)
@@ -93,7 +93,7 @@ class Score:
         }
 
 
-Question = Noul | Choice | Score
+Question = Noul | Choice[str] | Score
 
 
 def to_json(question: Question | Mapping[str, Any]) -> dict:

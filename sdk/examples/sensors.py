@@ -7,6 +7,8 @@ Intents map natural commands to built-in actions with a confidence floor.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
@@ -17,14 +19,14 @@ from jevx.py import ask
 
 class Room(Questions):
     occupied: bool = ask("is the room occupied?")
-    comfort: Score["cold", "fine", "hot"] = ask("thermal comfort?")
+    comfort: Score[Literal["cold", "fine", "hot"]] = ask("thermal comfort?")
     quiet_hours: bool = ask("is it night/quiet hours?", threshold=0.6)
 
 
 @ensure(lambda *a, result=None, **k: isinstance(result["readings"], dict), msg="readings dict")
 def tick(state: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
-    r = Room(client=s1)(state)  # 1 request
+    r = Room(client=s1).ask(state)  # 1 request
     return {
         "readings": {
             "occupied": {"prob": r.answers["occupied"].prob},

@@ -104,7 +104,7 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
             bot.exec("stop")
             return {"result": "aborted", "why": why, "steps": step}
         obs = bot.observe()
-        t = Tick(client=s1)({"obs": obs, "goal": bot.goal})  # 1 request
+        t = Tick(client=s1).ask({"obs": obs, "goal": bot.goal})  # 1 request
         if t.escalate:
             return {"result": "escalated", "obs": obs}
         v = t.verb

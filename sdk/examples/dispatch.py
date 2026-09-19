@@ -7,6 +7,8 @@ auto-handling skips the worker; unsure work goes to Codex and logs traces.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
@@ -28,7 +30,7 @@ class BugQs(Questions):
     """Triage a bug report."""
 
     repro: bool = ask("does the report reproduce the bug?")
-    severity: Score["cosmetic", "annoying", "blocking"] = ask("how severe?")
+    severity: Score[Literal["cosmetic", "annoying", "blocking"]] = ask("how severe?")
 
 
 class AccountQs(Questions):

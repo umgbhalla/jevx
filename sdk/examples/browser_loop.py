@@ -203,7 +203,7 @@ def reconcile(
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
         op, tgt, conf = choose(goal, snap, recent, s1)
         # pre-exec watcher gates (same state, one extra request)
-        w = Watch(client=s1)({"goal": goal, "page": snap, "history": recent[-10:]})
+        w = Watch(client=s1).ask({"goal": goal, "page": snap, "history": recent[-10:]})
         if w.goal_done:
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
         if w.stuck and len(recent) > 2:

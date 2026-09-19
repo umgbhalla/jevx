@@ -48,6 +48,7 @@ from .prompts import PROMPTS
 from .prompts import render
 from .py import AmbiguousTruth
 from .py import P
+from .py import Predicate
 from .py import Questions
 from .py import Refused
 from .py import Result
@@ -57,6 +58,7 @@ from .py import ask
 from .py import choose_from
 from .py import feels
 from .py import gate
+from .py import noul
 from .py import pick
 from .py import rate
 from .py import record
@@ -77,6 +79,8 @@ from .snapshots import Checkpoint
 from .snapshots import checkpointed
 from .sweep import sweep
 from .sweep import variants
+from .task import TaskRun
+from .task import task
 
 __all__ = [
     "AmbiguousTruth",
@@ -101,6 +105,7 @@ __all__ = [
     "NoulAnswer",
     "OverloadedError",
     "P",
+    "Predicate",
     "PROMPTS",
     "Partial",
     "Questions",
@@ -120,6 +125,7 @@ __all__ = [
     "StaleReplay",
     "System2",
     "Table",
+    "TaskRun",
     "TraceDriver",
     "Uses",
     "ValidationError",
@@ -136,6 +142,7 @@ __all__ = [
     "gate",
     "lint",
     "pick",
+    "noul",
     "rate",
     "record",
     "render",
@@ -155,4 +162,5 @@ __all__ = [
     "IxStage",
     "stage",
     "start",
+    "task",
 ]

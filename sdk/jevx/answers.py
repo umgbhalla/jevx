@@ -26,9 +26,9 @@ class NoulAnswer:
 
 
 @dataclass(frozen=True)
-class ChoiceAnswer:
-    choice: str
-    probabilities: dict[str, float]
+class ChoiceAnswer[ChoiceT: str]:
+    choice: ChoiceT
+    probabilities: dict[ChoiceT, float]
     confidence: float
     __match_args__ = ("choice", "probabilities", "confidence")
 
@@ -41,7 +41,7 @@ class ChoiceAnswer:
 
             raise _VE(f"choice {self.choice!r} not in probabilities")
 
-    def top(self, n: int = 3) -> list[tuple[str, float]]:
+    def top(self, n: int = 3) -> list[tuple[ChoiceT, float]]:
         return sorted(self.probabilities.items(), key=lambda kv: -kv[1])[:n]
 
     def is_sure(self, threshold: float = 0.6) -> bool:
@@ -68,7 +68,7 @@ class ScoreAnswer:
         return self.score / top
 
 
-Answer = NoulAnswer | ChoiceAnswer | ScoreAnswer
+Answer = NoulAnswer | ChoiceAnswer[str] | ScoreAnswer
 
 
 def _prob(name: str, v: Any) -> float:

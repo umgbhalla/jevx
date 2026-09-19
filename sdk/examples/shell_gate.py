@@ -8,7 +8,9 @@ CRAP-style verdict. Refuse / review / run.
 
 from __future__ import annotations
 
+import re
 import shlex
+from typing import Literal
 
 from jevx.backends import Backend
 from jevx.backends import Live
@@ -60,9 +62,11 @@ def is_routine(cmd: str) -> bool:
 
 class CmdCheck(Questions):
     risk_level: Score[
-        "cosmetic or isolated: formatting, comments, docs, tests only",
-        "moderate: one code path, limited callers, easy revert",
-        "high: auth, payments, migration, concurrency, secrets, deletion, shared interface",
+        Literal[
+            "cosmetic or isolated: formatting, comments, docs, tests only",
+            "moderate: one code path, limited callers, easy revert",
+            "high: auth, payments, migration, concurrency, secrets, deletion, shared interface",
+        ]
     ] = ask(
         "How risky is this command to run without extra review? Judge blast radius and reversibility, not size."
     )
@@ -76,14 +80,15 @@ class CmdCheck(Questions):
 
 
 @ensure(
-    lambda *a, result=None, **k: result["verdict"] in ("run", "review", "refuse"),
+    lambda *a, result=None, **k: result is not None
+    and result["verdict"] in ("run", "review", "refuse"),
     msg="known gate verdict",
 )
 def gate(cmd: str, backend: Backend | None = None) -> dict:
     if is_routine(cmd):
         return {"verdict": "run", "why": "routine-local", "requests": 0}
     s1 = (backend or Live()).s1()
-    c = CmdCheck(client=s1)({"command": cmd})  # 1 request
+    c = CmdCheck(client=s1).ask({"command": cmd})  # 1 request
     blast = blast_of(
         0.9 if c.secrets else 0.0,
         0.7 if c.behavior else 0.1,

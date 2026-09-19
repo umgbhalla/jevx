@@ -20,7 +20,7 @@ TIERS = ("fast", "balanced", "deep")
 
 class RouteQ(Questions):
     tier: Literal["fast", "balanced", "deep"] = ask("which tier fits this work?")
-    effort: Score["low", "medium", "high", "xhigh"] = ask("effort required?")
+    effort: Score[Literal["low", "medium", "high", "xhigh"]] = ask("effort required?")
     risky: bool = ask("is this risky, irreversible, or security-sensitive?")
 
 
@@ -33,7 +33,7 @@ def choose(
 ) -> dict:
     s1 = (backend or Live()).s1()
     try:
-        r = RouteQ(client=s1)(state)  # 1 request
+        r = RouteQ(client=s1).ask(state)  # 1 request
     except Exception:
         return {"tier": current, "why": "S1 error, fail closed"}
     risky_p = float(r.answers["risky"].prob)

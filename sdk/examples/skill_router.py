@@ -47,7 +47,7 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
         {s["name"]: s["description"] for s in skills},
         client=s1,
     )
-    g = Gates(client=s1)({"request": request})  # 1 request
+    g = Gates(client=s1).ask({"request": request})  # 1 request
     if (g.acts is False or g.procedure is False) and g.prose_ok:
         return {"skill": None, "why": "gates closed"}
     top = sorted(wide.probabilities.items(), key=lambda kv: -kv[1])[:shortlist]

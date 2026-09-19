@@ -30,7 +30,7 @@ class Triage(Questions):
     already_paid: bool = ask("was this already paid?", threshold=0.70)
     wrong_vendor: bool = ask("wrong vendor or entity?", threshold=0.65)
     po_status: Literal["priced", "component", "extra", "not_ours"] = ask("PO coverage?")
-    urgency: Score["routine", "pressing", "threatening"] = ask("payment pressure?")
+    urgency: Score[Literal["routine", "pressing", "threatening"]] = ask("payment pressure?")
 
 
 class FieldCheck(Questions):
@@ -99,7 +99,7 @@ def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = N
     s1, s2 = bk.s1(), bk.s2()
     text = doc.get("text", "")
     problems: list[str] = []
-    t = Triage(client=s1)({**doc, "text": text[:2000]})  # 1 request
+    t = Triage(client=s1).ask({**doc, "text": text[:2000]})  # 1 request
     if t.fraud:
         return {"action": "FRAUD_REVIEW", "problems": problems}
     if t.doc_type != "invoice":
@@ -134,7 +134,7 @@ def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = N
         tol = max(50.0, 0.02 * total)
         if abs(total - float(doc["po_total"])) > tol:
             problems.append("po_variance")
-    fc = FieldCheck(client=s1)({"doc": text[:2000], "extracted": inv})  # 1 request
+    fc = FieldCheck(client=s1).ask({"doc": text[:2000], "extracted": inv})  # 1 request
     if any([fc.hallucinated, fc.off_target, fc.unreasonable, fc.absence_wrong]):
         fix = s2.ask(
             f"Verifier flags on {inv}: propose short_pay_lines, dispute_reason, "
@@ -144,7 +144,7 @@ def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = N
 
     home_total = total * rate
     blast = blast_of(min(home_total / 10000, 1.0), 0.7 if po in ("extra", "not_ours") else 0.1)
-    r = Release(client=s1)({"invoice": inv, "po_status": po})  # 1 request
+    r = Release(client=s1).ask({"invoice": inv, "po_status": po})  # 1 request
     conf = 1.0 - max(float(r.answers["over_cap"].prob), float(r.answers["withholds"].prob))
     v = verdict(risk(blast, conf), review_at=1.5, refuse_at=4.0)
     if r.withholds or v == "refuse":

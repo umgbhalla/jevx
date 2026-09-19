@@ -25,7 +25,7 @@ class JudgeVerdict(Questions):
     no_regression: bool = ask("any sign of regression?", threshold=0.35)
     secure: bool = ask("any secret leak, injection, unsafe default?", threshold=0.35)
     idiomatic: bool = ask("is the code idiomatic for this repo?")
-    severity: Score["clean", "minor", "major", "critical"] = ask("worst issue severity?")
+    severity: Score[Literal["clean", "minor", "major", "critical"]] = ask("worst issue severity?")
     verdict: Literal["ship", "fixup", "rollback"] = ask("run verdict?")
     failmode: Literal["logic", "test_gap", "security", "perf", "none"] = ask("failure mode?")
 
@@ -36,7 +36,7 @@ class JudgeVerdict(Questions):
 )
 def judge_run(run: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
-    j = JudgeVerdict(client=s1)(run)  # 1 request (was 2)
+    j = JudgeVerdict(client=s1).ask(run)  # 1 request (was 2)
     sev = float(j.severity)
     confs = [
         c

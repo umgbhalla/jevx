@@ -14,8 +14,10 @@ import time
 from collections.abc import Callable
 
 from jevx.backends import Backend
-from jevx.backends import Live
 from jevx.contracts import ensure
+from jevx.programs import assess_due
+from jevx.programs import session
+from jevx.programs import tail
 from jevx.py import Questions
 from jevx.py import ask
 
@@ -76,11 +78,9 @@ Worker = Callable[[str | None], tuple[list[str], bool]]
 
 
 def build_observation(job: str, events: list[str], prior: str = "") -> dict:
-    tails = "\n".join(events[-MAX_EVENTS:])
     return {
         "job": job,
-        "event_tail": tails[-TAIL:],
-        "event_count": len(events),
+        **tail(events, n=MAX_EVENTS, chars=TAIL),
         "prior": prior[-2000:],
     }
 
@@ -176,9 +176,7 @@ def supervise(
     last_assess = 0.0
     dirty = force = False
     it = 0
-    bk = backend or Live()
-    s1 = bk.s1()
-    s2 = bk.s2()
+    s1, s2 = session(backend)
     log({"kind": "START", "task": task})
 
     try:
@@ -204,17 +202,20 @@ def supervise(
             if grace:
                 grace -= 1
                 continue
-            if (
-                not force
-                and not (dirty and now - last_assess >= MIN_INTERVAL)
-                and not (now - last_assess >= PERIODIC)
+            if not assess_due(
+                dirty,
+                force,
+                last_assess,
+                min_interval=MIN_INTERVAL,
+                periodic=PERIODIC,
+                now=now,
             ):
                 continue
             dirty = force = False
             last_assess = now
             obs = build_observation(task, events, prior)
             try:
-                w = Assess(client=s1)(obs)  # 1 request, 9 Nouls
+                w = Assess(client=s1).ask(obs)  # 1 request, 9 Nouls
             except Exception as e:
                 return {"action": "ESCALATE", "why": f"S1 error: {e}"}
             try:

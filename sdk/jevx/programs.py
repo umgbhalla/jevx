@@ -8,6 +8,7 @@ from typing import Any
 
 from .client import Client
 from .py import P
+from .py import Predicate
 from .py import Questions
 from .py import _decide
 from .py import _NoulQ
@@ -27,7 +28,7 @@ class Decider:
 
     def __call__(self, state: Any, client: Client | None = None) -> Any:
         c = client or self.client
-        result = self.owner(client=c)(state)
+        result = self.owner(client=c).ask(state)
         nt = getattr(self.owner, "Result")
         return result.as_named(nt)
 
@@ -75,7 +76,7 @@ def repair(
 
 def _run_check(check: Any, current: Any, client: Client | None) -> tuple[bool, str]:
     if isinstance(check, type) and issubclass(check, Questions):
-        r = check(client=client)(current)
+        r = check(client=client).ask(current)
         bad = [k for k, v in r.as_dict().items() if v is False]
         return (not bad, f"failed: {bad}" if bad else "")
     out = check(current)
@@ -102,6 +103,8 @@ def _holds(pred: Any, state: Any, client: Client | None) -> bool:
         return pred
     if isinstance(pred, P):
         return pred.over()
+    if isinstance(pred, Predicate):
+        return pred.ask(state, client=client).over()
     if callable(pred):
         try:
             n = len(inspect.signature(pred).parameters)

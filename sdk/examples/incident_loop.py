@@ -1,17 +1,20 @@
-"""Incident loop: S1 monitors, hypothesizes, verifies; S2 debugs and fixes.
+"""A bounded incident workflow with typed decisions and task history.
 
-`while feels(...).over()` is the whole control plane: symptom Nouls open the
-loop, a Choice picks the hypothesis, verification Nouls close it. Bounded, so
-an unsure S1 escalates instead of spinning.
+The task scope binds S1 and S2, batches each battery into one S1 call, and
+keeps a parent-linked record of judgments and work. Control flow stays Python.
 """
 
 from __future__ import annotations
 
-from jevx.backends import Backend
-from jevx.backends import Live
-from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import ask
+import json
+from typing import Any
+
+from jevx import Backend
+from jevx import Live
+from jevx import Questions
+from jevx import ask
+from jevx import ensure
+from jevx import task
 from jevx.redact import scrub
 
 
@@ -32,53 +35,125 @@ HYPOTHESES = {
     "traffic": "traffic spike or hot keys overwhelming capacity",
     "external": "a third-party dependency is degraded",
 }
-
 RISKY_HYPOTHESES = {"bad_deploy", "db"}
 
 
+def _result(run, **result: Any) -> dict[str, Any]:
+    return {**result, "history": list(run.history), "head": run.head}
+
+
 @ensure(
-    lambda *a, result=None, **k: result["action"] in ("NOOP", "ESCALATE", "RESOLVED", "APPROVAL"),
+    lambda *a, result=None, **k: result is not None
+    and result["action"] in ("NOOP", "ESCALATE", "RESOLVED", "APPROVAL"),
     msg="known incident action",
 )
 def respond(
-    logs: str, backend: Backend | None = None, max_rounds: int = 4, fetch_logs=None, approve=None
-) -> dict:
-    """fetch_logs() -> fresh logs from monitoring (independent of S2).
-    approve(hypothesis, fix) -> bool for risky hypotheses. Both injectable."""
-    bk = backend or Live()
-    s1 = bk.s1()
+    logs: str,
+    backend: Backend | None = None,
+    max_rounds: int = 4,
+    fetch_logs=None,
+    approve=None,
+) -> dict[str, Any]:
+    """Use injected log/approval hooks and a scripted backend for offline runs."""
     logs = scrub(logs)
-    sym = Symptoms(client=s1)(logs)  # 1 request
-    if sym.down is False:
-        return {"action": "NOOP", "why": "no outage in logs"}
-    if sym.data_risk:
-        return {
-            "action": "ESCALATE",
-            "why": "possible data risk — human first",
-            "sev": "SEV-1" if sym.user_facing else "SEV-2",
-        }
-    sev = "SEV-1" if sym.user_facing else "SEV-2"
+    with task("incident", backend if backend is not None else Live()) as run:
+        symptoms = run.ask(Symptoms, logs)
+        if symptoms.down is False:
+            return _result(run, action="NOOP", why="no outage in logs")
+        if symptoms.data_risk:
+            return _result(
+                run,
+                action="ESCALATE",
+                why="possible data risk - human first",
+                sev="SEV-1" if symptoms.user_facing else "SEV-2",
+            )
 
-    s2 = bk.s2()
-    from jevx.py import pick
+        severity = "SEV-1" if symptoms.user_facing else "SEV-2"
+        for round_no in range(max_rounds):
+            h = run.pick(
+                "most likely cause?",
+                {**run.context(), "logs": logs[-4000:], "round": round_no},
+                HYPOTHESES,
+            )
+            if h.confidence < 0.5:
+                return _result(run, action="ESCALATE", why="hypothesis unsure", round=round_no)
+            if h.choice in RISKY_HYPOTHESES and approve is not None and not approve(h.choice, None):
+                return _result(
+                    run, action="APPROVAL", why=f"{h.choice} needs approval", round=round_no
+                )
 
-    for rnd in range(max_rounds):
-        h = pick("most likely cause?", {"logs": logs[-4000:], "round": rnd}, HYPOTHESES, client=s1)
-        if h.confidence < 0.5:
-            return {"action": "ESCALATE", "why": "hypothesis unsure", "round": rnd}
-        if h.choice in RISKY_HYPOTHESES and approve is not None and not approve(h.choice, None):
-            return {"action": "APPROVAL", "why": f"{h.choice} needs approval", "round": rnd}
-        fix = s2.ask(
-            f"Investigate and fix. Hypothesis: {h.choice} ({HYPOTHESES[h.choice]}). "
-            f"Logs: {scrub(logs[-4000:])}"
-        )
-        new_logs = scrub(
-            fetch_logs()
-            if fetch_logs
-            else s2.ask("Show fresh logs/errors after the fix attempt above.")
-        )
-        v = Verify(client=s1)({"logs": new_logs[-4000:], "fix": fix})  # 1 request
-        if v.gone and v.caused:
-            return {"action": "RESOLVED", "rounds": rnd, "hypothesis": h.choice, "sev": sev}
-        logs = (logs + "\n" + new_logs)[-8000:]
-    return {"action": "ESCALATE", "why": "rounds exhausted", "rounds": max_rounds}
+            with run.branch(f"round {round_no}: {h.choice}", restore=False):
+                fix = run.s2.ask(
+                    "Investigate and fix this incident.\n"
+                    f"Task context: {json.dumps(run.context(), sort_keys=True)}\n"
+                    f"Hypothesis: {h.choice} ({HYPOTHESES[h.choice]})\n"
+                    f"Logs: {scrub(logs[-4000:])}"
+                )
+                new_logs = scrub(
+                    fetch_logs()
+                    if fetch_logs
+                    else run.s2.ask("Show fresh logs/errors after the fix attempt above.")
+                )
+                run.record("observation", summary="collected post-fix logs", logs=new_logs[-4000:])
+                verified = run.ask(Verify, {"logs": new_logs[-4000:], "fix": fix})
+                if verified.gone and verified.caused:
+                    return _result(
+                        run,
+                        action="RESOLVED",
+                        rounds=round_no + 1,
+                        hypothesis=h.choice,
+                        sev=severity,
+                    )
+
+            logs = (logs + "\n" + new_logs)[-8000:]
+            run.record("round", summary=f"round {round_no} did not verify")
+
+        return _result(run, action="ESCALATE", why="rounds exhausted", rounds=max_rounds)
+
+
+if __name__ == "__main__":
+    from jevx import Sim
+
+    result = respond(
+        "500 errors from the database connection pool",
+        Sim(
+            s1_script={
+                "down": [{"type": "noul", "noul": 0.99}],
+                "user_facing": [{"type": "noul", "noul": 0.92}],
+                "data_risk": [{"type": "noul", "noul": 0.08}],
+                "c": [
+                    {
+                        "type": "choice",
+                        "choice": "db",
+                        "probabilities": {"db": 0.9, "bad_deploy": 0.05, "traffic": 0.03, "external": 0.02},
+                        "confidence": 0.9,
+                    },
+                    {
+                        "type": "choice",
+                        "choice": "db",
+                        "probabilities": {"db": 0.9, "bad_deploy": 0.05, "traffic": 0.03, "external": 0.02},
+                        "confidence": 0.9,
+                    },
+                ],
+                "gone": [{"type": "noul", "noul": 0.2}, {"type": "noul", "noul": 0.95}],
+                "caused": [{"type": "noul", "noul": 0.5}, {"type": "noul", "noul": 0.9}],
+            },
+            s2_texts=["Checked the pool cap; the errors continue.", "Lowered the pool cap; saturation stopped."],
+        ),
+        fetch_logs=iter(
+            [
+                "Database timeouts continue after the first attempt.",
+                "No new database timeouts in the last five minutes.",
+            ]
+        ).__next__,
+    )
+    assert result["action"] == "RESOLVED"
+    assert result["history"][0]["parent"] is None
+    assert result["history"][-1]["parent"] == result["history"][-2]["id"]
+    branches = [event for event in result["history"] if event["kind"] == "branch"]
+    assert len(branches) == 2
+    second_pick = [event for event in result["history"] if event["kind"] == "jev.pick"][1]
+    assert branches[1]["parent"] == second_pick["id"]
+    assert any(event["kind"] == "round" for event in second_pick["state"]["history"])
+    print(json.dumps({k: v for k, v in result.items() if k != "history"}, indent=2))
+    print(json.dumps(result["history"], indent=2))
