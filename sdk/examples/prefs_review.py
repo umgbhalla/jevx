@@ -28,9 +28,10 @@ def review_diff(
     prefs: dict, hunks: list[dict], backend: Backend | None = None, bar: float = 0.70
 ) -> dict:
     """hunks: [{file, hunk}]. One batched request for all rule x hunk pairs."""
+    import hashlib as _h
+
     from jevx.py import _decide
     from jevx.questions import Noul
-    import hashlib as _h
 
     s1 = (backend or Live()).s1()
     qs, keys = {}, []
