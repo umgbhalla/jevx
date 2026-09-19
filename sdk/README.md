@@ -58,6 +58,24 @@ match pick("which team?", ticket, {"billing": "charges", "bug": "defects"}):
         request_human_review(team, ticket)
 ```
 
+Use Python unions for domain outcomes, match on the selected case, and compose
+indexed handoffs with `>>`. The [algebraic flow example](examples/algebraic_flow.py)
+shows all three together. This follows the same type-algebra idea as
+[Instructor's union and iterable response models](https://python.useinstructor.com/concepts/iterable/),
+while Jevx keeps decision thresholds and branch policy in Python.
+
+```python
+type Outcome = Allowed | HumanReview | Retry
+
+flow = start("ticket", "judged", judge) >> classify
+outcome, context = flow(ticket)
+
+match outcome:
+    case Allowed(confidence=p): send_reply(p)
+    case HumanReview(confidence=p): ask_operator(p)
+    case Retry(confidence=p): try_again(p)
+```
+
 For multi-turn work, `task()` binds both backends and records a parent-linked
 history. `run.context()` gives the current branch a short ancestor summary;
 `run.branch()` restores the parent on exit for sibling exploration. Use

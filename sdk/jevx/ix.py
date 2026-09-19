@@ -1,10 +1,11 @@
 """Indexed handoffs: the computation records its state transition.
 
-Ix[I, O, A]: run with I, produce A, land in O. bind() sequences only when
-the intermediate state matches: Ix[I,O,A] x (A -> Ix[O,N,B]) -> Ix[I,N,B].
-A wrongly-ordered pipeline is a TypeError at composition time, not a
-mid-run surprise. For S1->S2 handoffs: each stage declares what it needs
-and what it leaves behind.
+Ix[I, O, A]: run with I, produce A, land in O. ``>>`` joins indexed stages:
+the left stage's output label must match the right stage's input label. A
+wrong handoff raises TypeError when the pipeline is built.
+
+    flow = start("ticket", "judged", judge) >> classify
+    outcome, state = flow(ticket)
 """
 
 from __future__ import annotations
@@ -20,7 +21,7 @@ class Ix[I, O, A]:
     leaves: str
     run: Callable[[Any], tuple[Any, Any]]
 
-    def bind[N, B](self, nxt: Callable[[Any], Ix]) -> Ix[I, N, B]:
+    def bind[N, B](self, nxt: IxStage) -> Ix[I, N, B]:
         if not isinstance(nxt, IxStage):
             raise TypeError("bind() needs an IxStage built by stage()")
         if nxt.needs != self.leaves:
@@ -32,6 +33,10 @@ class Ix[I, O, A]:
             return nxt.run(mid, value)
 
         return Ix(inner.needs, nxt.leaves, run)
+
+    def __rshift__[N, B](self, nxt: IxStage) -> Ix[I, N, B]:
+        """Pipe into a stage whose input name matches this stage's output."""
+        return self.bind(nxt)
 
     def __call__(self, state: Any) -> tuple[Any, Any]:
         return self.run(state)
