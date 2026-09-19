@@ -7,10 +7,12 @@ an unsure S1 escalates instead of spinning.
 
 from __future__ import annotations
 
-from typing import Any, Literal
-
-from jevx.py import Questions, ask, feels
-from jevx.backends import Backend, Live
+from jevx.backends import Backend
+from jevx.backends import Live
+from jevx.contracts import ensure
+from jevx.py import Questions
+from jevx.py import ask
+from jevx.redact import scrub
 
 
 class Symptoms(Questions):
@@ -21,7 +23,7 @@ class Symptoms(Questions):
 
 class Verify(Questions):
     gone: bool = ask("are the reported symptoms gone from these logs?", threshold=0.8)
-    caused: bool = ask("does the fix address the root cause, not just symptoms?")
+    caused: bool = ask("does the fix address the root cause, not just symptoms?", threshold=0.7)
 
 
 HYPOTHESES = {
@@ -31,27 +33,52 @@ HYPOTHESES = {
     "external": "a third-party dependency is degraded",
 }
 
+RISKY_HYPOTHESES = {"bad_deploy", "db"}
 
-def respond(logs: str, backend: Backend | None = None, max_rounds: int = 4) -> dict:
+
+@ensure(
+    lambda *a, result=None, **k: result["action"] in ("NOOP", "ESCALATE", "RESOLVED", "APPROVAL"),
+    msg="known incident action",
+)
+def respond(
+    logs: str, backend: Backend | None = None, max_rounds: int = 4, fetch_logs=None, approve=None
+) -> dict:
+    """fetch_logs() -> fresh logs from monitoring (independent of S2).
+    approve(hypothesis, fix) -> bool for risky hypotheses. Both injectable."""
     bk = backend or Live()
     s1 = bk.s1()
+    logs = scrub(logs)
     sym = Symptoms(client=s1)(logs)  # 1 request
     if sym.down is False:
         return {"action": "NOOP", "why": "no outage in logs"}
     if sym.data_risk:
-        return {"action": "ESCALATE", "why": "possible data risk — human first"}
+        return {
+            "action": "ESCALATE",
+            "why": "possible data risk — human first",
+            "sev": "SEV-1" if sym.user_facing else "SEV-2",
+        }
+    sev = "SEV-1" if sym.user_facing else "SEV-2"
 
     s2 = bk.s2()
     from jevx.py import pick
 
     for rnd in range(max_rounds):
-        h = pick("most likely cause?", {"logs": logs, "round": rnd}, HYPOTHESES, client=s1)
+        h = pick("most likely cause?", {"logs": logs[-4000:], "round": rnd}, HYPOTHESES, client=s1)
         if h.confidence < 0.5:
             return {"action": "ESCALATE", "why": "hypothesis unsure", "round": rnd}
-        fix = s2.ask(f"Investigate and fix. Hypothesis: {h.choice} ({HYPOTHESES[h.choice]}). Logs: {logs}")
-        new_logs = s2.ask(f"Show fresh logs/errors after the fix attempt above.")
-        v = Verify(client=s1)({"logs": new_logs, "fix": fix})  # 1 request
+        if h.choice in RISKY_HYPOTHESES and approve is not None and not approve(h.choice, None):
+            return {"action": "APPROVAL", "why": f"{h.choice} needs approval", "round": rnd}
+        fix = s2.ask(
+            f"Investigate and fix. Hypothesis: {h.choice} ({HYPOTHESES[h.choice]}). "
+            f"Logs: {scrub(logs[-4000:])}"
+        )
+        new_logs = scrub(
+            fetch_logs()
+            if fetch_logs
+            else s2.ask("Show fresh logs/errors after the fix attempt above.")
+        )
+        v = Verify(client=s1)({"logs": new_logs[-4000:], "fix": fix})  # 1 request
         if v.gone and v.caused:
-            return {"action": "RESOLVED", "rounds": rnd, "hypothesis": h.choice}
-        logs = new_logs
+            return {"action": "RESOLVED", "rounds": rnd, "hypothesis": h.choice, "sev": sev}
+        logs = (logs + "\n" + new_logs)[-8000:]
     return {"action": "ESCALATE", "why": "rounds exhausted", "rounds": max_rounds}

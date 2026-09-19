@@ -1,54 +1,98 @@
 """Model-based flow checker: randomized S1 scripts + invariant assertions.
 
 Hypothesis-style stateful discipline without the dependency: drive a flow
-against scripted backends with randomized answer scripts, asserting the
+against scripted backends with per-call randomized answers, asserting the
 invariants that must hold on EVERY path (budgets respected, no unverified
-sends, fail-closed on exhaustion). Randomized, shrinking-ish (minimizes the
-failing seed by replaying prefixes), stdlib-only.
+sends, fail-closed on exhaustion). Script exhaustion is an `overcall`
+failure, never a pass. Stdlib-only.
 """
 
 from __future__ import annotations
 
 import random
-from typing import Any, Callable
+from collections.abc import Callable
 
 
-def _answers_for(spec: dict[str, tuple[str, tuple]], rng: random.Random) -> dict:
-    out = {}
-    for qid, (kind, draw) in spec.items():
-        if kind == "noul":
-            out[qid] = [{"type": "noul", "noul": rng.choice(draw)}]
-        elif kind == "choice":
-            opts, pick = draw
-            out[qid] = [{"type": "choice", "choice": pick,
-                         "probabilities": {o: (0.9 if o == pick else 0.1 / max(len(opts) - 1, 1))
-                                           for o in opts}, "confidence": 0.9}]
-        elif kind == "score":
-            v, top = draw
-            out[qid] = [{"type": "score", "score": v,
-                         "legend": {str(i): str(i) for i in range(top + 1)},
-                         "probabilities": {str(i): 1.0 if i == round(v) else 0.0
-                                           for i in range(top + 1)}, "confidence": 0.9}]
-    return out
+def _draw(kind: str, draw: tuple, rng: random.Random) -> dict:
+    if kind == "noul":
+        return {"type": "noul", "noul": rng.choice(draw)}
+    if kind == "choice":
+        opts, pick = draw
+        pick = rng.choice(opts) if pick == "?" else pick
+        rest = [o for o in opts if o != pick]
+        share = 0.1 / max(len(rest), 1)
+        return {
+            "type": "choice",
+            "choice": pick,
+            "probabilities": {o: (0.9 if o == pick else share) for o in opts},
+            "confidence": 0.9,
+        }
+    if kind == "score":
+        v, top = draw
+        v = rng.choice(v) if isinstance(v, (list, tuple)) else v
+        return {
+            "type": "score",
+            "score": v,
+            "legend": {str(i): str(i) for i in range(top + 1)},
+            "probabilities": {str(i): 1.0 if i == round(v) else 0.0 for i in range(top + 1)},
+            "confidence": 0.9,
+        }
+    raise ValueError(f"unknown answer kind {kind!r}")
 
 
-def fuzz(flow: Callable[..., dict], spec: dict[str, tuple[str, tuple]],
-         invariants: list[Callable[[dict], bool]], args: tuple = (),
-         seeds: int = 50, base_seed: int = 0) -> dict:
-    """spec: qid -> ("noul", (candidate probs...)) etc. Each seed serves the
-    first scripted answer per qid per S1 call... simplified: one answer per qid
-    reused across calls (deterministic per seed). Returns failures with seeds."""
-    from .backends import Sim
+class _StreamSim:
+    """Backend whose S1 answers draw fresh from the seed stream per call."""
 
+    def __init__(self, spec: dict, seed: int, texts: int = 50):
+        self.spec = spec
+        self.rng = random.Random(seed)
+        self.calls = 0
+        self._texts = ["x"] * texts
+
+    def s1(self):
+        inner = self
+
+        class _C:
+            def system_one(_self, state, questions, model=None):
+                from . import answers as _A
+                from .client import Response
+
+                inner.calls += 1
+                parsed = {
+                    k: _A.parse_answer(k, _draw(inner.spec[k][0], inner.spec[k][1], inner.rng))
+                    for k in questions
+                }
+                return Response(
+                    parsed,
+                    "fuzz",
+                    {},
+                )
+
+        return _C()
+
+    def s2(self):
+        from .s2 import FakeSystem2
+
+        return FakeSystem2(list(self._texts))
+
+
+def fuzz(
+    flow: Callable[..., dict],
+    spec: dict[str, tuple[str, tuple]],
+    invariants: list[Callable[[dict], bool]],
+    args: tuple = (),
+    seeds: int = 50,
+    base_seed: int = 0,
+) -> dict:
+    """spec: qid -> ("noul", (candidate probs...)) | ("choice", ((opts), pick|"?""))
+    | ("score", (value|[values], top)). Unknown qids fail loudly (spec gap)."""
     failures = []
     for s in range(base_seed, base_seed + seeds):
-        rng = random.Random(s)
-        script = _answers_for(spec, rng)
+        sim = _StreamSim(spec, s)
         try:
-            out = flow(*args, backend=Sim(s1_script=script, s2_texts=["x"] * 20))
-        except AssertionError as e:  # script exhaustion = flow over-called; not a failure
-            if "ScriptDriver" not in str(e):
-                failures.append({"seed": s, "error": str(e)})
+            out = flow(*args, backend=sim)
+        except KeyError as e:
+            failures.append({"seed": s, "error": f"spec gap (unknown qid): {e}"})
             continue
         except Exception as e:
             failures.append({"seed": s, "error": f"{type(e).__name__}: {e}"})
@@ -56,9 +100,10 @@ def fuzz(flow: Callable[..., dict], spec: dict[str, tuple[str, tuple]],
         for inv in invariants:
             try:
                 ok = inv(out)
-            except Exception as e:
+            except Exception:
                 ok = False
             if not ok:
-                failures.append({"seed": s, "error": f"invariant {inv.__name__} on {out}"})
+                name = getattr(inv, "__name__", type(inv).__name__)
+                failures.append({"seed": s, "error": f"invariant {name} on {out}"})
                 break
     return {"failures": failures, "seeds": seeds}

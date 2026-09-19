@@ -32,11 +32,15 @@ import inspect
 import json
 import sys as _sys
 import typing as _typing
-from typing import Annotated, Any, Literal, Mapping, get_args, get_origin
+from collections.abc import Mapping
+from typing import Any
+from typing import Literal
+from typing import get_args
+from typing import get_origin
 
+from . import fx as _fx
 from .answers import ChoiceAnswer as Choice
-from .answers import parse_answer
-from .client import Client, Response
+from .client import Client
 from .questions import Choice as _ChoiceQ
 from .questions import Noul as _NoulQ
 from .questions import Score as _ScoreQ
@@ -51,19 +55,14 @@ __all__ = [
     "Score",
     "StaleReplay",
     "ask",
-    "cases",
     "choose_from",
-    "compile",
     "feels",
     "gate",
     "pick",
     "rate",
     "record",
-    "repair",
     "replay",
     "route",
-    "routes_from",
-    "surrogate",
 ]
 
 
@@ -87,20 +86,20 @@ class P(float):
     """A probability 0..1. Fuzzy &, |, ~. Comparisons return bool.
     Bare bool() raises — pandas-style, ambiguity must be explicit."""
 
-    def __new__(cls, v: float) -> "P":
+    def __new__(cls, v: float) -> P:
         f = float(v)
         if not 0.0 <= f <= 1.0:
             raise ValueError(f"P must be within 0..1, got {v!r}")
         return super().__new__(cls, f)
 
-    def __and__(self, o: float) -> "P":
+    def __and__(self, o: float) -> P:
         return P(float(self) * float(o))
 
-    def __or__(self, o: float) -> "P":
+    def __or__(self, o: float) -> P:
         a, b = float(self), float(o)
         return P(a + b - a * b)
 
-    def __invert__(self) -> "P":
+    def __invert__(self) -> P:
         return P(1.0 - float(self))
 
     def __bool__(self) -> bool:
@@ -128,7 +127,7 @@ class Score(float):
     confidence: float
     legend: tuple
 
-    def __new__(cls, value: float, *, confidence: float, legend: tuple) -> "Score":
+    def __new__(cls, value: float, *, confidence: float, legend: tuple) -> Score:
         obj = super().__new__(cls, value)
         obj.confidence = confidence
         obj.legend = legend
@@ -138,7 +137,7 @@ class Score(float):
         return int(round(float(self)))
 
     @classmethod
-    def __class_getitem__(cls, levels) -> "_Levels":
+    def __class_getitem__(cls, levels) -> _Levels:
         if isinstance(levels, str):
             levels = (levels,)
         return _Levels(tuple(levels))
@@ -170,13 +169,17 @@ def _sha(state: Any, questions: dict) -> str:
 
 
 def _decide(state: Any, questions: dict, client: Client | None) -> dict[str, Any]:
-    from . import fx as _fx
-
     payload = {k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in questions.items()}
-    if client is None:
-        driver = _fx.current()
-        if driver is not None:
-            return driver.answer(state, payload)
+    driver = _fx.current()
+    if driver is not None:
+        if client is not None and not isinstance(driver, _fx.LiveDriver):
+            import warnings as _w
+
+            _w.warn(
+                "explicit client ignored: a driver is on the stack "
+                "(record/replay needs to see calls)"
+            )
+        return driver.answer(state, payload)
     for hook in _Hooks:
         if r := hook("pre", state, payload):
             return r
@@ -229,7 +232,7 @@ def rate(
     return Score(a.score, confidence=a.confidence, legend=tuple(levels))
 
 
-def ask(question: str, *, threshold: float = 0.5) -> "_Field":
+def ask(question: str, *, threshold: float = 0.5) -> _Field:
     """Declare a battery field inside a Questions class (descriptor)."""
     return _Field(question, threshold)
 
@@ -262,31 +265,29 @@ class Questions:
 
     bool -> Noul (threshold per field via ask(..., threshold=))
     Literal[...] -> Choice
-    Score["low", ...] -> Score (raw float position)
+    Score["low", "..."] -> Score (raw float position)
     """
 
     _fields_: dict[str, _Field] = {}
 
     def __init_subclass__(cls) -> None:
-        cls._fields_ = {
-            k: v for k, v in cls.__dict__.items() if isinstance(v, _Field)
-        }
+        cls._fields_ = {k: v for k, v in cls.__dict__.items() if isinstance(v, _Field)}
         raw = getattr(cls, "__annotations__", {})
         for name in cls._fields_:
             if name not in raw:
-                raise TypeError(f"{cls.__name__}.{name} needs an annotation (bool/Literal/Score[...])")
+                raise TypeError(f"{cls.__name__}.{name} needs an annotation")
         import typing as _t
 
         resolved = _hints(cls)
         cls.Result = _t.NamedTuple(
             f"{cls.__name__}Result",
-            [(n, _pytype(resolved[n])) for n in cls._fields_],
+            [(n, _pytype(resolved[n])) for n in cls._fields_],  # ty: ignore[invalid-named-tuple]
         )
 
     def __init__(self, client: Client | None = None):
         self._client = client
 
-    def __call__(self, state: Any) -> "Result":
+    def __call__(self, state: Any) -> Result:
         hints = _hints(self.__class__)
         qs: dict[str, Any] = {}
         for name, f in self._fields_.items():
@@ -302,9 +303,7 @@ class Questions:
             elif get_origin(ann) is Literal:
                 values[name] = a.choice
             elif isinstance(ann, _Levels):
-                values[name] = float(
-                    Score(a.score, confidence=a.confidence, legend=ann.levels)
-                )
+                values[name] = Score(a.score, confidence=a.confidence, legend=ann.levels)
             else:
                 raise TypeError(f"unsupported annotation for {name}: {ann!r}")
             meta[name] = a
@@ -354,7 +353,11 @@ class Result:
 
     def confidence(self, name: str) -> float | None:
         a = self.answers[name]
-        return getattr(a, "confidence", None)
+        c = getattr(a, "confidence", None)
+        if c is not None:
+            return c
+        p = getattr(a, "prob", None)  # Noul: margin from coin-flip as confidence
+        return abs(p - 0.5) * 2 if p is not None else None
 
     def __repr__(self) -> str:
         return f"Result({object.__getattribute__(self, '_values')!r})"
@@ -387,22 +390,32 @@ def gate(question: str, *, over: float = 0.8, client: Client | None = None):
 
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any):
-            state = kwargs.pop("state", args[0] if args else "")
-            rest = args[1:] if "state" not in kwargs and args else args
-            call = f"{fn.__name__}{sig}: {rest} {kwargs}".strip()
+            bound = sig.bind_partial(*args, **kwargs)
+            if "state" in bound.arguments:
+                state = bound.arguments["state"]
+            elif args:
+                state = args[0]
+            else:
+                state = ""
+            call = f"{fn.__name__}{sig}: {args} {kwargs}".strip()
             p = feels(question, {"call": call, "state": state}, client=client)
-            wrapper.last_prob = float(p)
+            wrapper.last_prob = float(p)  # ty: ignore[unresolved-attribute]
             if p.over(over):
                 raise Refused(f"{fn.__name__} refused: {question} P={float(p):.2f}", prob=float(p))
             return fn(*args, **kwargs)
 
-        wrapper.last_prob = 0.0
+        wrapper.last_prob = 0.0  # ty: ignore[unresolved-attribute]
         return wrapper
 
     return deco
 
 
-def route(options: Mapping[str, str | None], *, instructions: str = "Which route?", client: Client | None = None):
+def route(
+    options: Mapping[str, str | None],
+    *,
+    instructions: str = "Which route?",
+    client: Client | None = None,
+):
     """Fill the first declared parameter with Jev's pick; judge the first arg.
 
     @route({"billing": "...", "bug": "..."})
@@ -415,10 +428,10 @@ def route(options: Mapping[str, str | None], *, instructions: str = "Which route
         def wrapper(*args: Any, **kwargs: Any):
             state = kwargs.get("state", args[0] if args else "")
             c = pick(instructions, state, dict(options), client=client)
-            wrapper.last_choice = c
+            wrapper.last_choice = c  # ty: ignore[unresolved-attribute]
             return fn(c.choice, *args, **kwargs)
 
-        wrapper.last_choice = None
+        wrapper.last_choice = None  # ty: ignore[unresolved-attribute]
         return wrapper
 
     return deco
@@ -430,8 +443,6 @@ def route(options: Mapping[str, str | None], *, instructions: str = "Which route
 @contextlib.contextmanager
 def record(path: str):
     """Log every decision (state, questions, answers) as JSONL. Probably-style."""
-    from . import fx as _fx
-
     with _fx.use(_fx.RecordDriver(path)):
         yield path
 
@@ -439,24 +450,29 @@ def record(path: str):
 @contextlib.contextmanager
 def replay(path: str):
     """Re-run offline: serve logged answers in order, no network. Mismatch -> StaleReplay."""
-    from . import fx as _fx
-
     with _fx.use(_fx.ReplayDriver(path)):
         yield path
 
 
-def choose_from(state: Any, routes: dict[str, Any], *,
-                instructions: str = "Which route does this call for?",
-                client: Client | None = None) -> tuple[str, Any]:
+def choose_from(
+    state: Any,
+    routes: dict[str, Any],
+    *,
+    instructions: str = "Which route does this call for?",
+    client: Client | None = None,
+) -> tuple[str, Any]:
     """Union dispatch: one route question, then fill only the winner.
 
     routes: name -> Questions subclass (filled in a second request with only
     its questions) | callable(state) (run directly, no second request).
     Returns (name, filled Result | callable return).
     """
-    c = pick(instructions, state,
-             {n: getattr(r, "__doc__", None) or n for n, r in routes.items()},
-             client=client)
+    c = pick(
+        instructions,
+        state,
+        {n: getattr(r, "__doc__", None) or n for n, r in routes.items()},
+        client=client,
+    )
     winner = routes[c.choice]
     if isinstance(winner, type) and issubclass(winner, Questions):
         return c.choice, winner(client=client)(state)

@@ -24,6 +24,8 @@ def risk(blast: float, confidence: float) -> float:
 
 def verdict(risk_value: float, *, review_at: float, refuse_at: float) -> str:
     """act | review | refuse. Calibrate review_at/refuse_at per action stakes."""
+    if not review_at <= refuse_at:
+        raise ValueError(f"need review_at <= refuse_at, got {review_at}, {refuse_at}")
     if risk_value >= refuse_at:
         return "refuse"
     if risk_value >= review_at:
@@ -32,11 +34,16 @@ def verdict(risk_value: float, *, review_at: float, refuse_at: float) -> str:
 
 
 def blast_of(*signals: float, cap: float = 5.0) -> float:
-    """Blast radius from countable signals (amount, paths touched, irreversibility...).
+    """Blast radius from countable signals, each 0..1.
 
-    Each signal 0..1; worst dominates, rest add a tail. Capped so one number
+    Worst dominates, rest add a tail. Capped so one number
     can't nuke the scale — tune per domain.
     """
+    import math as _m
+
     if not signals:
         return 0.0
-    return min(cap, max(signals) + 0.25 * (sum(signals) - max(signals)))
+    for s in signals:
+        if not isinstance(s, (int, float)) or not _m.isfinite(s) or not 0.0 <= s <= 1.0:
+            raise ValueError(f"blast signals must be 0..1 finite, got {s!r}")
+    return max(0.0, min(cap, max(signals) + 0.25 * (sum(signals) - max(signals))))

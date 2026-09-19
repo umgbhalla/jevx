@@ -27,8 +27,10 @@ Plan:
 Feedback: {feedback}
 
 Rules: smallest change that satisfies the plan; run the tests; do not reformat
-unrelated code; do not touch auth, migrations, or secrets unless the plan says so.
-Report: CHANGED <files> / TESTS <pass|fail + command> / REMAINING <list|none> / PROBLEMS <list|none>."""
+unrelated code; do not touch auth, migrations, or secrets unless the plan says
+so.
+Report: CHANGED <files> / TESTS <pass|fail + command> /
+REMAINING <list|none> / PROBLEMS <list|none>."""
 
 _FIX = """You are a fix worker. One finding, one fix.
 File: {file} Hunk: {hunk}
@@ -81,12 +83,20 @@ PROMPTS = {
 
 
 def render(name: str, **slots: str) -> str:
-    """Render a named prompt. Unknown name or missing slot raises."""
+    """Render a named prompt. Unknown name, missing AND extra slots raise.
+
+    Extra slots almost always mean a caller typo; `{}` literals in job text
+    must be doubled (`{{}}`) like any format string.
+    """
+    from string import Formatter as _F
+
     try:
         tpl = PROMPTS[name]
     except KeyError:
         raise KeyError(f"unknown prompt {name!r}; known: {sorted(PROMPTS)}") from None
-    try:
-        return tpl.format(**slots)
-    except KeyError as e:
-        raise KeyError(f"prompt {name!r} missing slot {e}") from None
+    fields = {f for _, f, _, _ in _F().parse(tpl) if f}
+    missing = fields - set(slots)
+    extra = set(slots) - fields
+    if missing or extra:
+        raise KeyError(f"prompt {name!r}: missing={sorted(missing)} extra={sorted(extra)}")
+    return tpl.format(**slots)

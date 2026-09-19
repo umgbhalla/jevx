@@ -1,5 +1,7 @@
 """Typed errors."""
 
+from __future__ import annotations
+
 
 class JevError(Exception):
     """Base error. Carries HTTP status and TypeSafe request id when known."""
@@ -8,6 +10,24 @@ class JevError(Exception):
         super().__init__(message)
         self.status = status
         self.request_id = request_id
+
+    @property
+    def retryable(self) -> bool:
+        return self.status in {408, 429, 500, 502, 503, 504, 529}
+
+    @staticmethod
+    def from_status(status: int | None, message: str, request_id: str | None = None) -> JevError:
+        if status in (401, 403):
+            return AuthError(message, status=status, request_id=request_id)
+        if status == 422:
+            return ValidationError(message, status=status, request_id=request_id)
+        if status == 429:
+            return RateLimitError(message, status=status, request_id=request_id)
+        if status == 529:
+            return OverloadedError(message, status=status, request_id=request_id)
+        if status is not None and status >= 500:
+            return ServerError(message, status=status, request_id=request_id)
+        return JevError(message, status=status, request_id=request_id)
 
 
 class AuthError(JevError):

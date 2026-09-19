@@ -7,45 +7,54 @@ import inspect
 from typing import Any
 
 from .client import Client
-from .py import (
-    P,
-    Questions,
-    _build,
-    _decide,
-    _hints,
-    feels,
-    pick,
-)
+from .py import P
+from .py import Questions
+from .py import _decide
+from .py import _NoulQ
+from .py import feels
 
 
 class Decider:
     """A validated battery compiled to a closure: thresholds baked, one call.
 
-    dec = compile(Triage, act_at=0.7)
+    dec = compile(Triage)
     dec(ticket)  -> Triage.Result namedtuple (validated fields only)
     """
 
-    def __init__(self, owner: type, act_at: float = 0.7, client: Client | None = None):
+    def __init__(self, owner: type, client: Client | None = None):
         self.owner = owner
-        self.act_at = act_at
         self.client = client
 
-    def __call__(self, state: Any) -> Any:
-        result = self.owner(client=self.client)(state)
-        return result.as_named(self.owner.Result)
+    def __call__(self, state: Any, client: Client | None = None) -> Any:
+        c = client or self.client
+        result = self.owner(client=c)(state)
+        nt = getattr(self.owner, "Result")
+        return result.as_named(nt)
 
 
-def compile(owner: type, act_at: float = 0.7, client: Client | None = None) -> Decider:
+def compile(owner: type, client: Client | None = None) -> Decider:
     """Validate a Questions battery once; get a callable returning typed results."""
     if not (isinstance(owner, type) and issubclass(owner, Questions)):
         raise TypeError("compile() needs a Questions subclass")
     if not owner._fields_:
         raise ValueError("compile() needs at least one ask() field")
-    return Decider(owner, act_at, client)
+    return Decider(owner, client)
 
 
-def repair(output: Any, check: Any, revise: Any, *,
-           rounds: int = 2, client: Client | None = None) -> tuple[Any, bool]:
+def _maybe_client(fn: Any, client: Client | None) -> dict:
+    """Pass client= only to callables that accept it."""
+    if client is None:
+        return {}
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {"client": client} if "client" in params else {}
+
+
+def repair(
+    output: Any, check: Any, revise: Any, *, rounds: int = 2, client: Client | None = None
+) -> tuple[Any, bool]:
     """Generate -> check -> repair interpreter.
 
     check(output) -> (ok: bool, critique: str); revise(output, critique) makes
@@ -57,7 +66,10 @@ def repair(output: Any, check: Any, revise: Any, *,
         ok, critique = _run_check(check, current, client)
         if ok:
             return current, True
-        current = revise(current, critique)
+        if callable(revise):
+            current = revise(current, critique, **_maybe_client(revise, client))
+        else:
+            current = revise
     return current, False
 
 
@@ -91,16 +103,37 @@ def _holds(pred: Any, state: Any, client: Client | None) -> bool:
     if isinstance(pred, P):
         return pred.over()
     if callable(pred):
-        return bool(pred())
+        try:
+            n = len(inspect.signature(pred).parameters)
+        except (TypeError, ValueError):
+            n = 0
+        return bool(pred(state, **_maybe_client(pred, client)) if n else pred())
     if isinstance(pred, str):
-        q, _, bar = pred.partition("@")
+        q, _, bar = pred.rpartition("@")
+        try:
+            threshold = float(bar) if bar else 0.5
+        except ValueError:
+            raise ValueError(f"cases(): bad bar in {pred!r}, use 'question @0.8'") from None
         p = feels(q.strip(), state, client=client)
-        return p.over(float(bar) if bar else 0.5)
+        return p.over(threshold)
     raise TypeError(f"cases(): bad predicate {pred!r}")
 
 
-def surrogate(*, question: str, reference: Any, over: float = 0.8,
-              log: list | None = None, client: Client | None = None):
+def _keep_client(target: Any, kwargs: dict, client: Client | None) -> dict:
+    """Keep the client kwarg only for targets that accept it."""
+    if "client" in kwargs and "client" not in _maybe_client(target, client):
+        return {k: v for k, v in kwargs.items() if k != "client"}
+    return kwargs
+
+
+def surrogate(
+    *,
+    question: str,
+    reference: Any,
+    over: float = 0.8,
+    log: list | None = None,
+    client: Client | None = None,
+):
     """Dual-implementation functions (distil/dispatch pattern).
 
     S1 answers the SHAPE directly when confident (dispatch: no body runs);
@@ -113,18 +146,20 @@ def surrogate(*, question: str, reference: Any, over: float = 0.8,
 
     Returns (result, {"path": "surrogate"|"reference", "prob": ...}).
     """
+
     def deco(fn):
         import functools as _f
 
         @_f.wraps(fn)
         def wrapper(state: Any, *args: Any, **kwargs: Any):
-            call_client = kwargs.pop("client", client)
-            from .py import _NoulQ, _decide as _d
-            (a,) = _d(state, {"s": _NoulQ(question)}, call_client).values()
+            call_client = kwargs.get("client", client)
+            (a,) = _decide(state, {"s": _NoulQ(question)}, call_client).values()
             p = float(a.prob)
             if P(p).over(over):
-                return fn(state, *args, **kwargs), {"path": "surrogate", "prob": p}
-            result = reference(state, *args, **kwargs)
+                kw = _keep_client(fn, kwargs, client)
+                return fn(state, *args, **kw), {"path": "surrogate", "prob": p}
+            kw = _keep_client(reference, kwargs, client)
+            result = reference(state, *args, **kw)
             if log is not None:
                 log.append({"question": question, "state": state, "result": result})
             return result, {"path": "reference", "prob": p}
@@ -150,17 +185,94 @@ def routes_from(fn: Any, var: str) -> dict[str, None]:
     tree = ast.parse(src)
     out: dict[str, None] = {}
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Match):
+        if (
+            not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            or node.name != fn.__name__
+        ):
             continue
-        subj = node.subject
-        name = subj.id if isinstance(subj, ast.Name) else None
-        if name != var:
-            continue
-        for case in node.cases:
-            pat = case.pattern
-            if isinstance(pat, ast.MatchValue) and isinstance(pat.value, ast.Constant) \
-                    and isinstance(pat.value.value, str):
-                out[pat.value.value] = None
+        for child in ast.walk(node):
+            if child is node or not isinstance(child, ast.Match):
+                continue
+            subj = child.subject
+            name = subj.id if isinstance(subj, ast.Name) else None
+            if name != var:
+                continue
+            for case in child.cases:
+                if case.guard is not None:
+                    continue
+                for pat in _or_values(case.pattern):
+                    if isinstance(pat, ast.Constant) and isinstance(pat.value, str):
+                        out[pat.value] = None
     if not out:
         raise ValueError(f"routes_from(): no string arms for {var!r} in {fn.__name__}")
     return out
+
+
+def _or_values(pattern: ast.AST) -> list:
+    if isinstance(pattern, ast.MatchOr):
+        out = []
+        for p in pattern.patterns:
+            out.extend(_or_values(p))
+        return out
+    if isinstance(pattern, ast.MatchValue):
+        return [pattern.value]
+    return []
+
+
+# ---------------------------------------------------------------- shared loop helpers
+
+
+def session(backend: Any = None) -> tuple[Any, Any]:
+    """One backend in, (s1, s2) out. Replaces `bk or Live(); bk.s1(); bk.s2()`."""
+    from .backends import Live as _Live
+
+    bk = backend or _Live()
+    return bk.s1(), bk.s2()
+
+
+def band(p: float, *, act_at: float, review_at: float) -> str:
+    """3-way band for any probability (Choice confidence, Noul prob, Score conf)."""
+    if p >= act_at:
+        return "act"
+    if p >= review_at:
+        return "review"
+    return "skip"
+
+
+def topk(scored: list[tuple[float, Any]], *, k: int, floor: float = 0.0) -> list[Any]:
+    """Top-k values above floor, descending. Passages, skills, hunks, edges."""
+    return [v for p, v in sorted(scored, reverse=True)[:k] if p >= floor]
+
+
+def joint(*confs: float) -> float:
+    """Joint confidence: the weakest link. One unsure input spoils the batch."""
+    return min(confs) if confs else 0.0
+
+
+def verify_each(items: list, ask_fn: Any, *, over: float) -> tuple[list, list]:
+    """Split items into (ok, bad) by ask_fn(item) probability."""
+    ok, bad = [], []
+    for item in items:
+        (ok if float(ask_fn(item)) >= over else bad).append(item)
+    return ok, bad
+
+
+def stuck(history: list, *, window: int = 3) -> bool:
+    """True when the last `window` entries show no change marker."""
+    if len(history) < window:
+        return False
+    tail = history[-window:]
+    return all(not (e.get("page_changed", True) if isinstance(e, dict) else e) for e in tail)
+
+
+def assess_due(
+    dirty: bool, force: bool, last: float, *, min_interval: float, periodic: float, now: float
+) -> bool:
+    """Debounce predicate: lifecycle force, dirty+interval, or periodic poll."""
+    return bool(force or (dirty and now - last >= min_interval) or now - last >= periodic)
+
+
+def tail(events: list[str], n: int = 30, chars: int = 12000) -> dict:
+    """Bounded observation tail for watcher state."""
+    t = events[-n:]
+    return {"event_tail": "\n".join(t)[-chars:], "event_count": len(events)}

@@ -42,15 +42,17 @@ class Partial:
         snap = self.snapshot()
         if not isinstance(snap, dict):
             raise ValueError("stream never formed an object")
-        missing = [k for k in required if not snap.get(k)]
+        missing = [k for k in required if k not in snap]
         if missing:
             raise ValueError(f"incomplete: missing {missing}")
         return snap
 
 
 def _truncate(txt: str) -> str:
-    """Close open braces/brackets/quotes greedily for prefix parsing."""
-    depth, instr, esc = 0, False, False
+    """Close open brackets/quotes greedily for prefix parsing."""
+    pairs = {"{": "}", "[": "]"}
+    stack: list[str] = []
+    instr, esc = False, False
     cut = len(txt)
     for i, ch in enumerate(txt):
         if esc:
@@ -61,12 +63,14 @@ def _truncate(txt: str) -> str:
             continue
         if ch == '"':
             instr = not instr
-        elif not instr and ch in "{[":
-            depth += 1
+        elif not instr and ch in pairs:
+            stack.append(ch)
         elif not instr and ch in "}]":
-            depth -= 1
+            if stack:
+                stack.pop()
     if instr:
         cut = txt.rfind('"')
     s = txt[:cut] + ('"' if instr else "")
-    s += "}" * max(depth, 0)
+    s = s.rstrip().rstrip(",")
+    s += "".join(pairs[c] for c in reversed(stack))
     return s

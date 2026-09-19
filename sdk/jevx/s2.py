@@ -7,7 +7,10 @@ Swap the backend without touching the algebra: FakeSystem2 replays scripts.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import Any
+from typing import Protocol
+from typing import runtime_checkable
 
 
 @runtime_checkable
@@ -17,14 +20,18 @@ class System2(Protocol):
     def ask(self, prompt: str, **kwargs: Any) -> str: ...
     def new_thread(self) -> None: ...
     def capabilities(self) -> frozenset: ...
+    def close(self) -> None: ...
 
 
 class CodexSystem2:
     """Real backend: openai-codex threads. Requires `pip install jevx[codex]`."""
 
-    def __init__(self, model: str = "gpt-5.6", sandbox: str = "workspace-write", workdir: str = "."):
+    def __init__(
+        self, model: str = "gpt-5.6", sandbox: str = "workspace-write", workdir: str = "."
+    ):
         try:
-            from openai_codex import Codex, Sandbox
+            from openai_codex import Codex  # ty: ignore[unresolved-import]
+            from openai_codex import Sandbox  # ty: ignore[unresolved-import]
         except ImportError:
             raise ImportError("pip install jevx[codex]  (needs openai-codex)") from None
         presets = {
@@ -32,14 +39,18 @@ class CodexSystem2:
             "workspace-write": Sandbox.workspace_write,
             "full": Sandbox.full_access,
         }
+        self._model = model
+        self._sandbox = presets.get(sandbox, Sandbox.workspace_write)
+        self._workdir = workdir  # reserved: thread cwd once the SDK exposes it
         self._cx = Codex()
-        self._thread = self._cx.thread_start(
-            model=model, sandbox=presets.get(sandbox, Sandbox.workspace_write),
-        )
-        self._workdir = workdir
+        self._thread = self._cx.thread_start(model=model, sandbox=self._sandbox)
 
     def new_thread(self) -> None:
-        raise NotImplementedError("create a new CodexSystem2 for a fresh thread")
+        self.close()
+        from openai_codex import Codex as _Cx  # ty: ignore[unresolved-import]
+
+        self._cx = _Cx()
+        self._thread = self._cx.thread_start(model=self._model, sandbox=self._sandbox)
 
     def ask(self, prompt: str, **kwargs: Any) -> str:
         return self._thread.run(prompt, **kwargs).final_response
@@ -65,13 +76,19 @@ class FakeSystem2:
     def ask(self, prompt: str, **kwargs: Any) -> str:
         self.prompts.append(prompt)
         if callable(self.script):
-            return self.script(prompt)
+            result = self.script(prompt)
+            if not isinstance(result, str):
+                raise TypeError(f"script callable must return str, got {type(result).__name__}")
+            return result
         if not self.script:
             raise AssertionError("FakeSystem2 script exhausted")
         return self.script.pop(0)
 
     def capabilities(self) -> frozenset:
         return frozenset({"scripted"})
+
+    def close(self) -> None:
+        pass
 
 
 class LazyS2:
@@ -83,7 +100,9 @@ class LazyS2:
         self._real: CodexSystem2 | None = None
 
     def new_thread(self) -> None:
-        self._real = None
+        if self._real is not None:
+            self._real.close()
+            self._real = None
 
     def ask(self, prompt: str, **kwargs: Any) -> str:
         if self._real is None:
@@ -94,3 +113,8 @@ class LazyS2:
         if self._real is None:
             return frozenset({"lazy"})
         return self._real.capabilities()
+
+    def close(self) -> None:
+        if self._real is not None:
+            self._real.close()
+            self._real = None

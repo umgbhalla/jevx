@@ -1,39 +1,61 @@
-"""Durable runs: checkpoint after every S2 call, resume without redoing S1.
+"""Durable runs: checkpoint every S2 call, resume without redoing S1.
 
-Monty-style suspension, honestly scoped: Python execution itself isn't
-snapshotted — instead the S1 decision log grows monotonically, so resume()
-replays judged prefixes for free and only S2 calls from the suspension point
-run live. Checkpoint = record-split: one JSONL per S2 call index.
+Honestly scoped: Python execution itself isn't snapshotted. Instead the S2
+call journal grows monotonically, so a resumed run replays answered prefixes
+for free and only new calls go live. Positional AND content-checked: row k
+must equal (prompt, kwargs) or Divergence raises instead of serving stale text.
 """
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 from typing import Any
 
-from . import fx as _fx
+
+class Divergence(Exception):
+    pass
 
 
 class Checkpoint:
-    """Wrap an S2 worker: log each (prompt -> reply) pair durably."""
+    """Wrap an S2 worker: log each (prompt, kwargs, reply) to one JSONL journal."""
 
     def __init__(self, path: str, inner):
-        self.path = path
+        self.journal = f"{path}.jsonl" if not path.endswith(".jsonl") else path
         self.inner = inner
-        self.n = len(glob.glob(f"{path}.*.json"))
+        self._pos = 0
+        if os.path.exists(self.journal):
+            with open(self.journal) as fh:
+                self._rows = [json.loads(line) for line in fh if line.strip()]
+        else:
+            self._rows = []
 
     def ask(self, prompt: str, **kwargs: Any) -> str:
-        for i in range(self.n):
-            with open(f"{self.path}.{i}.json") as fh:
-                row = json.load(fh)
-            if row["prompt"] == prompt:
-                return row["reply"]
+        if self._pos < len(self._rows):
+            row = self._rows[self._pos]
+            if row.get("prompt") != prompt or row.get("kwargs", {}) != kwargs:
+                raise Divergence(f"checkpoint diverged at call {self._pos}")
+            self._pos += 1
+            return row["reply"]
         reply = self.inner.ask(prompt, **kwargs)
-        with open(f"{self.path}.{self.n}.json", "w") as fh:
-            json.dump({"prompt": prompt, "reply": reply}, fh)
-        self.n += 1
+        row = {"prompt": prompt, "kwargs": kwargs, "reply": reply}
+        tmp = f"{self.journal}.{os.getpid()}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(row, fh)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        with open(self.journal, "a") as fh:
+            with open(tmp) as src:
+                fh.write(src.read())
+            fh.flush()
+            os.fsync(fh.fileno())
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        self._rows.append(row)
+        self._pos += 1
         return reply
 
     def new_thread(self) -> None:

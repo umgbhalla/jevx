@@ -7,12 +7,16 @@ per-event latencies. SimMarket stands in for the chain; decisions are real S1.
 
 from __future__ import annotations
 
-from jevx.backends import Backend, Live
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Literal
 
-from jevx.py import Questions, ask
+from jevx.backends import Live
+from jevx.contracts import ensure
+from jevx.contracts import require
+from jevx.py import Questions
+from jevx.py import ask
 
 
 @dataclass
@@ -31,8 +35,9 @@ class SimMarket:
         self.mid += self.drift * (1 if self.tick % 3 else -1)
         # resting post-only orders fill when touched without crossing
         for o in list(self.resting):
-            if (o["side"] == "buy" and self.mid - self.spread / 2 <= o["px"]) or \
-               (o["side"] == "sell" and self.mid + self.spread / 2 >= o["px"]):
+            if (o["side"] == "buy" and self.mid - self.spread / 2 <= o["px"]) or (
+                o["side"] == "sell" and self.mid + self.spread / 2 >= o["px"]
+            ):
                 self.resting.remove(o)
                 self.fills.append(o)
                 q = o["qty"] if o["side"] == "buy" else -o["qty"]
@@ -52,7 +57,9 @@ class SimMarket:
 
 
 class Direction(Questions):
-    direction: Literal["buy", "sell"] = ask("will price be higher or lower than mid after the horizon, by more than spread?")
+    direction: Literal["buy", "sell"] = ask(
+        "will price be higher or lower than mid after the horizon, by more than spread?"
+    )
 
 
 def allowed(m: SimMarket, side: str, qty: float, max_pos: float, dry: bool) -> tuple[bool, str]:
@@ -66,8 +73,20 @@ def allowed(m: SimMarket, side: str, qty: float, max_pos: float, dry: bool) -> t
     return True, "live"
 
 
-def run(market: SimMarket, backend=None, ticks: int = 20, qty: float = 10.0,
-        max_pos: float = 100.0, dry: bool = True, horizon: str = "~100 blocks") -> dict:
+@ensure(lambda *a, result=None, **k: True, msg="position reported")
+@require(
+    lambda market, backend=None, ticks=20, qty=10.0, **k: qty > 0 and ticks > 0,
+    msg="positive qty/ticks",
+)
+def run(
+    market: SimMarket,
+    backend=None,
+    ticks: int = 20,
+    qty: float = 10.0,
+    max_pos: float = 100.0,
+    dry: bool = True,
+    horizon: str = "~100 blocks",
+) -> dict:
     s1 = (backend or Live()).s1()
     decisions, late, held, t0 = [], 0, 0, time.perf_counter()
     busy = False
@@ -77,19 +96,37 @@ def run(market: SimMarket, backend=None, ticks: int = 20, qty: float = 10.0,
             continue
         busy = True
         book = market.read_book()
-        state = {"mid": book["mid"], "spread": book["spread"], "tick": book["tick"],
-                 "position": market.position, "horizon": horizon}
+        state = {
+            "mid": book["mid"],
+            "spread": book["spread"],
+            "tick": book["tick"],
+            "position": market.position,
+            "horizon": horizon,
+        }
         d = Direction(client=s1)(state)  # 1 request
         side = d.direction
         ok, why = allowed(market, side, qty, max_pos, dry)
         if ok and why != "dry-run":
             px = book["mid"] + (-book["spread"] if side == "buy" else book["spread"])
             market.place(side, qty, px)
-        decisions.append({"tick": book["tick"], "side": side,
-                          "prob": d.answers["direction"].probabilities[side],
-                          "allowed": ok, "why": why})
+        decisions.append(
+            {
+                "tick": book["tick"],
+                "side": side,
+                "prob": d.answers["direction"].probabilities[side],
+                "allowed": ok,
+                "why": why,
+            }
+        )
         busy = False
     dt = (time.perf_counter() - t0) / max(ticks, 1)
-    return {"decisions": decisions, "late": late, "held": held,
-            "position": market.position, "cash": market.cash,
-            "fills": market.fills, "sec_per_tick": dt, "dry": dry}
+    return {
+        "decisions": decisions,
+        "late": late,
+        "held": held,
+        "position": market.position,
+        "cash": market.cash,
+        "fills": market.fills,
+        "sec_per_tick": dt,
+        "dry": dry,
+    }

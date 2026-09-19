@@ -8,7 +8,8 @@ Violation raises ContractError naming the function and clause.
 from __future__ import annotations
 
 import functools
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 
 class ContractError(AssertionError):
@@ -33,7 +34,7 @@ def ensure(pred: Callable[..., bool], msg: str):
         @functools.wraps(fn)
         def wrapper(*args: Any, **kwargs: Any):
             result = fn(*args, **kwargs)
-            if not pred(*args, result, **kwargs):
+            if not pred(*args, result=result, **kwargs):
                 raise ContractError(f"{fn.__name__} ensures {msg}")
             return result
 

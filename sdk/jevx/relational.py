@@ -12,9 +12,10 @@ import json
 from collections import defaultdict
 from typing import Any
 
-from .answers import Answer
 from .client import Client
-from .questions import Choice, Noul, Score
+from .questions import Choice
+from .questions import Noul
+from .questions import Score
 
 BATCH = 20
 
@@ -33,9 +34,11 @@ class Table:
         self.stats = {"requests": 0, "judged": 0, "cache_hits": 0}
 
     def _batch(self, items: list[tuple[int, dict, Any]]) -> None:
+        if not items:
+            return
         c = self._client or Client()
         for i in range(0, len(items), BATCH):
-            chunk = items[i:i + BATCH]
+            chunk = items[i : i + BATCH]
             qs = {f"r{j}": q for j, (_, _, q) in enumerate(chunk)}
             resp = c.system_one({"rows": [row for _, row, _ in chunk]}, qs)
             self.stats["requests"] += 1
@@ -52,30 +55,40 @@ class Table:
     def where(self, condition: str, threshold: float = 0.5) -> list[dict]:
         """[r for r in rows if P(condition about r) >= threshold]. One batched pass."""
         key = ("noul", condition)
-        missing = [(i, r, _Q(key, Noul(f"Does this record satisfy: {condition}?")))
-                   for i, r in enumerate(self.rows) if (key, _h(r)) not in self._cache]
+        missing = [
+            (i, r, _Q(key, Noul(f"Does this record satisfy: {condition}?")))
+            for i, r in enumerate(self.rows)
+            if (key, _h(r)) not in self._cache
+        ]
         self._batch(missing)
         self._hits(key, self.rows)
-        return [r for r in self.rows
-                if self._cache[(key, _h(r))].prob >= threshold]
+        return [r for r in self.rows if self._cache[(key, _h(r))].prob >= threshold]
 
-    def order_by(self, question: str, levels: list[str], limit: int = 0,
-                 descending: bool = True) -> list[dict]:
+    def order_by(
+        self, question: str, levels: list[str], limit: int = 0, descending: bool = True
+    ) -> list[dict]:
         """Score every row once, sort by score. (No early-stop: all rows judged.)"""
         key = ("score", question, tuple(levels))
-        missing = [(i, r, _Q(key, Score(f"{question}?", list(levels))))
-                   for i, r in enumerate(self.rows) if (key, _h(r)) not in self._cache]
+        missing = [
+            (i, r, _Q(key, Score(f"{question}?", list(levels))))
+            for i, r in enumerate(self.rows)
+            if (key, _h(r)) not in self._cache
+        ]
         self._batch(missing)
         self._hits(key, self.rows)
-        ranked = sorted(self.rows, key=lambda r: self._cache[(key, _h(r))].score,
-                        reverse=descending)
+        ranked = sorted(
+            self.rows, key=lambda r: self._cache[(key, _h(r))].score, reverse=descending
+        )
         return ranked[:limit] if limit else ranked
 
     def group_by(self, question: str, options: dict) -> dict[str, list[dict]]:
         """Choice per row, grouped. Must score all rows — no early-stop."""
-        key = ("choice", question, tuple(sorted(options)))
-        missing = [(i, r, _Q(key, Choice(f"{question}?", dict(options))))
-                   for i, r in enumerate(self.rows) if (key, _h(r)) not in self._cache]
+        key = ("choice", question, tuple(sorted((k, v or "") for k, v in options.items())))
+        missing = [
+            (i, r, _Q(key, Choice(f"{question}?", dict(options))))
+            for i, r in enumerate(self.rows)
+            if (key, _h(r)) not in self._cache
+        ]
         self._batch(missing)
         self._hits(key, self.rows)
         out: dict[str, list[dict]] = defaultdict(list)

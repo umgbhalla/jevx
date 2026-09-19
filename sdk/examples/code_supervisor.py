@@ -7,10 +7,12 @@ S2 never decides done — S1 declares FINISH.
 
 from __future__ import annotations
 
-from typing import Any, Literal
-
-from jevx.backends import Backend, Live
-from jevx.py import Questions, Score, ask, feels
+from jevx.backends import Backend
+from jevx.backends import Live
+from jevx.contracts import ensure
+from jevx.py import Questions
+from jevx.py import Score
+from jevx.py import ask
 
 
 class Scope(Questions):
@@ -29,15 +31,18 @@ class DiffCheck(Questions):
     severity: Score["cosmetic", "notable", "blocking"] = ask("how severe are remaining issues?")
 
 
-def supervise(task: str, backend: Backend | None = None,
-              max_fixes: int = 3) -> dict:
+@ensure(
+    lambda *a, result=None, **k: result["action"] in ("FINISH", "ESCALATE"),
+    msg="known supervise action",
+)
+def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> dict:
     bk = backend or Live()
     s1, s2 = bk.s1(), bk.s2()
     sc = Scope(client=s1)(task)  # 1 request
-    if sc.complexity <= 0.5:
+    if sc.complexity <= 0.5 and sc.testable:
         out = s2.ask(f"Do it, then run tests. Task: {task}")
         d = DiffCheck(client=s1)({"task": task, "diff": out})  # 1 request
-        if d.correct and d.risky is False:
+        if d.correct and d.risky is False and d.confidence("correct") >= 0.2:
             return {"action": "FINISH", "mode": "trivial", "output": out}
         return {"action": "ESCALATE", "why": "trivial path failed checks", "output": out}
 
@@ -47,11 +52,11 @@ def supervise(task: str, backend: Backend | None = None,
         return {"action": "ESCALATE", "why": "plan rejected", "plan": plan}
 
     out = ""
-    for i in range(max_fixes + 1):
+    for i in range(max_fixes):
         out = s2.ask(f"Step {i}: implement per plan, run tests, show diff.\nPlan: {plan}")
         d = DiffCheck(client=s1)({"task": task, "diff": out})  # 1 request/turn
-        if d.correct and d.risky is False:
-            return {"action": "FINISH", "mode": "planned", "turns": i, "output": out}
+        if d.correct and d.risky is False and d.confidence("correct") >= 0.2:
+            return {"action": "FINISH", "mode": "planned", "turns": i + 1, "output": out}
         if d.severity >= 1.5:
             return {"action": "ESCALATE", "why": "blocking issues remain", "output": out}
     return {"action": "ESCALATE", "why": "fix budget exhausted", "output": out}

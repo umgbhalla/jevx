@@ -9,30 +9,29 @@ and what it leaves behind.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Generic, TypeVar
-
-I, O, N, A, B = TypeVar("I"), TypeVar("O"), TypeVar("N"), TypeVar("A"), TypeVar("B")
+from typing import Any
 
 
 @dataclass(frozen=True)
-class Ix(Generic[I, O, A]):
+class Ix[I, O, A]:
     needs: str
     leaves: str
     run: Callable[[Any], tuple[Any, Any]]
 
-    def bind(self, nxt: Callable[[Any], "Ix"]) -> "Ix":
+    def bind[N, B](self, nxt: Callable[[Any], Ix]) -> Ix[I, N, B]:
         if not isinstance(nxt, IxStage):
             raise TypeError("bind() needs an IxStage built by stage()")
         if nxt.needs != self.leaves:
             raise TypeError(f"cannot sequence {self.leaves!r} -> {nxt.needs!r}")
-        inner, outer_needs, outer_leaves = self, nxt.needs, nxt.leaves
+        inner = self
 
         def run(state: Any) -> tuple[Any, Any]:
             value, mid = inner.run(state)
             return nxt.run(mid, value)
 
-        return Ix(outer_needs, outer_leaves, run)
+        return Ix(inner.needs, nxt.leaves, run)
 
     def __call__(self, state: Any) -> tuple[Any, Any]:
         return self.run(state)
@@ -50,6 +49,7 @@ class IxStage:
 
 def stage(needs: str, leaves: str):
     """@stage("ticket", "draft") def write(state, value): ..."""
+
     def deco(fn: Callable[[Any, Any], tuple[Any, Any]]) -> IxStage:
         return IxStage(needs, leaves, fn)
 

@@ -6,14 +6,18 @@ drives S2 (Codex, organic). Examples run on scripted backends; live needs keys.
 ## Layout
 
 - `sdk/` — uv project (`uv run pytest`, `uv lock`)
-- `sdk/jevx/` — client, idiomatic `py` layer, `relational`, `lint`, `prompts`,
-  `s2` backends, `risk`
+- `sdk/jevx/` — client (`Client`/`AsyncClient`/`Response{noul,choice,score,get}`),
+  idiomatic `py` layer, `relational`, `lint`, `prompts`,
+  `s2` (`System2`/`CodexSystem2`/`FakeSystem2`/`LazyS2`), `risk`
 - `sdk/jevx/` also: `fx` (Ask effects + Live/Script/Replay/Record/Condition/Trace
   drivers + `run` interpreter), `backends` (Live/Sim bundles, `Uses` bases),
   `contracts` (require/ensure), `programs` (Decider compile, repair loop,
   cases dispatch, surrogate dual-impl, match-arm route compiler),
   `sweep` (variant grids), `check` (flow fuzzer), `snapshots` (S2 checkpoints),
-  `ix` (indexed handoffs), `partial` (streaming snapshots)
+  `ix` (indexed handoffs), `partial` (streaming snapshots),
+  `questions` (`Noul`/`Choice`<=255/`Score` 2-10 builders),
+  `answers` (`NoulAnswer`/`ChoiceAnswer`/`ScoreAnswer`, `parse_answer`),
+  `errors` (`Auth`/`Validation`/`RateLimit`/`Overloaded`/`Server` + `from_status`)
 - `sdk/examples/` — 20 flows: support_copilot, code_supervisor, incident_loop,
   invoice_cascade, rag_guard, browser_loop, review_gate, conteval,
   floor_supervisor, skill_router, context_compact, model_router, graph_nav,

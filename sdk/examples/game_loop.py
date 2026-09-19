@@ -9,12 +9,16 @@ offline smoke runs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Literal
 
-from jevx.backends import Backend, Live
-from jevx.py import Questions, Score, ask
-
+from jevx.backends import Live
+from jevx.contracts import ensure
+from jevx.contracts import require
+from jevx.py import Questions
+from jevx.py import Score
+from jevx.py import ask
 
 ACTIONS = {
     "noop": "Release controls, keep momentum.",
@@ -29,8 +33,9 @@ JUMP_HOLD = {"right_jump": "right", "right_run_jump": "right_run", "jump": "noop
 
 
 class Tick(Questions):
-    action: Literal["noop", "right", "right_jump", "right_run",
-                    "right_run_jump", "jump", "left"] = ask("Which controller macro should commit next?")
+    action: Literal[
+        "noop", "right", "right_jump", "right_run", "right_run_jump", "jump", "left"
+    ] = ask("Which controller macro should commit next?")
     jump_needed: bool = ask("Should a forward jump begin or remain held now?")
     danger: Score["safe", "caution", "threat"] = ask("How dangerous is the immediate situation?")
 
@@ -54,17 +59,32 @@ class SimWorld:
         ahead = [g for g in sorted(self.gaps) if self.x < g <= self.x + 5]
         near = {str(k): v for k, v in self.foes.items() if abs(k - self.x) <= 6}
         contact = any(abs(k - self.x) < 1.5 and self.y == 0 for k in self.foes)
-        return {"player": {"x": round(self.x, 1), "airborne": self.air > 0,
-                           "jump_phase": "rising" if self.vy > 0 else ("falling" if self.air else "ground")},
-                "terrain": {"gap_ahead": ahead[:1], "trusted": True},
-                "hazard": {"foes": near, "contact": contact,
-                           "jump_must_start": contact and self.air == 0},
-                "episode": {"stalled": self.stalled, "progress": round(self.x / self.length, 2)}}
+        return {
+            "player": {
+                "x": round(self.x, 1),
+                "airborne": self.air > 0,
+                "jump_phase": "rising" if self.vy > 0 else ("falling" if self.air else "ground"),
+            },
+            "terrain": {"gap_ahead": ahead[:1], "trusted": True},
+            "hazard": {
+                "foes": near,
+                "contact": contact,
+                "jump_must_start": contact and self.air == 0,
+            },
+            "episode": {"stalled": self.stalled, "progress": round(self.x / self.length, 2)},
+        }
 
     def step(self, action: str) -> None:
         self.tick += 1
-        dx = {"noop": 0, "right": 1, "right_jump": 1, "right_run": 2,
-              "right_run_jump": 2, "jump": 0, "left": -1}[action]
+        dx = {
+            "noop": 0,
+            "right": 1,
+            "right_jump": 1,
+            "right_run": 2,
+            "right_run_jump": 2,
+            "jump": 0,
+            "left": -1,
+        }[action]
         if action in JUMP_HOLD or action == "jump":
             if self.air == 0:
                 self.vy, self.air = 3.0, 1
@@ -87,6 +107,24 @@ class SimWorld:
             self.won = True
 
 
+JUMP_MAP = {
+    "right": "right_jump",
+    "right_run": "right_run_jump",
+    "noop": "jump",
+    "left": "jump",
+    "jump": "jump",
+    "right_jump": "right_jump",
+    "right_run_jump": "right_run_jump",
+}
+
+
+@ensure(
+    lambda *a, result=None, **k: result["result"] in ("won", "died", "timeout"),
+    msg="known game result",
+)
+@require(
+    lambda world, backend=None, max_ticks=200, **k: 1 <= max_ticks <= 1000, msg="ticks in range"
+)
 def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
     s1 = (backend or Live()).s1()
     trace = []
@@ -94,11 +132,20 @@ def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
         snap = world.snapshot()
         t = Tick(client=s1)(snap)  # 1 request: Choice + Noul + Score
         a = t.action
-        if t.jump_needed and a in ("right", "right_run", "noop"):
-            a = {"right": "right_jump", "right_run": "right_run_jump"}.get(a, "jump")
+        if world.air > 0 and a in JUMP_HOLD:  # hold continuation: don't drop the jump mid-air
+            a = {"right_jump": "right_jump", "right_run_jump": "right_run_jump"}.get(a, a)
+        elif t.jump_needed:
+            a = JUMP_MAP.get(a, "jump")
         world.step(a)
-        trace.append({"tick": world.tick, "action": a, "danger": float(t.danger),
-                      "x": world.x, "conf": t.confidence("action")})
+        trace.append(
+            {
+                "tick": world.tick,
+                "action": a,
+                "danger": float(t.danger),
+                "x": world.x,
+                "conf": t.confidence("action"),
+            }
+        )
         if not world.alive:
             return {"result": "died", "x": world.x, "ticks": world.tick}
         if world.won:

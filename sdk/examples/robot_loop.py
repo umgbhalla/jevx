@@ -8,21 +8,34 @@ wheels slip near edges, killswitch works.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from typing import Literal
 
-from jevx.backends import Backend, Live
-from jevx.py import Questions, ask
+from jevx.backends import Live
+from jevx.contracts import ensure
+from jevx.contracts import require
+from jevx.py import Questions
+from jevx.py import ask
 
 VERBS = ("forward", "back", "left", "right", "stop", "dock", "snapshot", "done")
 CONFIRM = {"dock"}
-FLOORS = {"forward": 0.50, "back": 0.50, "left": 0.50, "right": 0.50,
-          "stop": 0.0, "dock": 0.90, "snapshot": 0.60, "done": 0.50}
+FLOORS = {
+    "forward": 0.50,
+    "back": 0.50,
+    "left": 0.50,
+    "right": 0.50,
+    "stop": 0.0,
+    "dock": 0.90,
+    "snapshot": 0.60,
+    "done": 0.50,
+}
 
 
 class Tick(Questions):
-    verb: Literal["forward", "back", "left", "right", "stop", "dock", "snapshot", "done"] = \
-        ask("which single verb advances the mission?")
+    verb: Literal["forward", "back", "left", "right", "stop", "dock", "snapshot", "done"] = ask(
+        "which single verb advances the mission?"
+    )
     escalate: bool = ask("is the situation beyond the verb list?", threshold=0.5)
     done: bool = ask("is the mission complete?", threshold=0.5)
 
@@ -39,9 +52,12 @@ class SimBot:
 
     def observe(self) -> dict:
         dx = self.goal[0] - self.x
-        return {"pos": (round(self.x, 1), round(self.y, 1)),
-                "goal_dx": round(dx, 1), "battery": round(self.battery, 1),
-                "near_edge": self.x > self.edge - 1.5}
+        return {
+            "pos": (round(self.x, 1), round(self.y, 1)),
+            "goal_dx": round(dx, 1),
+            "battery": round(self.battery, 1),
+            "near_edge": self.x > self.edge - 1.5,
+        }
 
     def exec(self, verb: str) -> str:
         if self.killed:
@@ -66,10 +82,21 @@ class SimBot:
         return None
 
 
+@ensure(
+    lambda *a, result=None, **k: (
+        result["result"]
+        in ("done", "aborted", "escalated", "confirm", "handover", "budget", "killed")
+    ),
+    msg="known mission result",
+)
+@require(
+    lambda bot, contract, backend=None, max_steps=40, **k: 1 <= max_steps <= 200,
+    msg="steps in range",
+)
 def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> dict:
     s1 = (backend or Live()).s1()
     """contract: {confirm: [...], budgets: {max_steps}, abort_when: [...]}."""
-    repeats, last = 0, ""
+    repeats, last = 1, ""
     for step in range(min(max_steps, contract.get("budgets", {}).get("max_steps", max_steps))):
         if bot.killed:
             return {"result": "killed", "steps": step}
@@ -81,14 +108,14 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
         if t.escalate:
             return {"result": "escalated", "obs": obs}
         v = t.verb
+        if t.confidence("verb") < FLOORS[v]:
+            continue  # below floor: hold position this tick (not counted as repeat)
         if v == last:
             repeats += 1
             if repeats >= 8:
                 return {"result": "handover", "why": "8 same verbs in a row"}
         else:
-            repeats, last = 0, v
-        if t.confidence("verb") < FLOORS[v]:
-            continue  # below floor: hold position this tick
+            repeats, last = 1, v
         if v in contract.get("confirm", CONFIRM):
             return {"result": "confirm", "verb": v, "obs": obs}
         if v == "done":

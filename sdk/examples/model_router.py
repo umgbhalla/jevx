@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from typing import Literal
 
-from jevx.backends import Backend, Live
-from jevx.py import Questions, Score, ask
+from jevx.backends import Backend
+from jevx.backends import Live
+from jevx.py import Questions
+from jevx.py import Score
+from jevx.py import ask
 
 TIERS = ("fast", "balanced", "deep")
 
@@ -18,17 +21,23 @@ TIERS = ("fast", "balanced", "deep")
 class RouteQ(Questions):
     tier: Literal["fast", "balanced", "deep"] = ask("which tier fits this work?")
     effort: Score["low", "medium", "high", "xhigh"] = ask("effort required?")
-    risky: bool = ask("is this risky, irreversible, or security-sensitive?", threshold=0.70)
+    risky: bool = ask("is this risky, irreversible, or security-sensitive?")
 
 
-def choose(state: str, current: str = "balanced", backend: Backend | None = None,
-           up_at: float = 0.3, down_at: float = 0.6) -> dict:
+def choose(
+    state: str,
+    current: str = "balanced",
+    backend: Backend | None = None,
+    up_at: float = 0.3,
+    down_at: float = 0.6,
+) -> dict:
     s1 = (backend or Live()).s1()
     try:
         r = RouteQ(client=s1)(state)  # 1 request
     except Exception:
         return {"tier": current, "why": "S1 error, fail closed"}
-    if r.risky:
+    risky_p = float(r.answers["risky"].prob)
+    if risky_p > 0.7:
         return {"tier": "deep", "effort": max(float(r.effort), 2.0), "why": "risky"}
     want, conf = r.tier, r.confidence("tier") or 0.0
     ci, wi = TIERS.index(current), TIERS.index(want)

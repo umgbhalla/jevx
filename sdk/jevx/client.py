@@ -5,22 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
-from typing import Any, Mapping
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any
 
 from . import questions as _q
-from .answers import Answer, parse_answer
-from .errors import (
-    AuthError,
-    JevError,
-    OverloadedError,
-    RateLimitError,
-    ServerError,
-    ValidationError,
-)
+from .answers import Answer
+from .answers import ChoiceAnswer
+from .answers import NoulAnswer
+from .answers import ScoreAnswer
+from .answers import parse_answer
+from .errors import AuthError
+from .errors import JevError
 
 DEFAULT_BASE_URL = "https://api.typesafe.ai"
 DEFAULT_MODEL = "jev-latest"
@@ -33,6 +33,13 @@ class RetryPolicy:
     backoff_initial: float = 0.5
     backoff_max: float = 5.0
     timeout: float = 30.0
+    jitter: float = 0.1
+
+    def __post_init__(self) -> None:
+        if self.max_retries < 0:
+            raise ValueError("max_retries must be >= 0")
+        if self.timeout <= 0:
+            raise ValueError("timeout must be > 0")
 
 
 @dataclass
@@ -42,10 +49,26 @@ class Response:
     usage: dict
     request_id: str | None = None
 
+    def get(self, qid: str) -> Answer | None:
+        return self.answers.get(qid)
+
     def noul(self, qid: str) -> float:
         a = self.answers[qid]
-        assert hasattr(a, "prob"), f"{qid!r} is not a Noul answer"
-        return a.prob  # type: ignore[attr-defined]
+        if not isinstance(a, NoulAnswer):
+            raise TypeError(f"{qid!r} is not a Noul answer")
+        return a.prob
+
+    def choice(self, qid: str) -> tuple[str, float]:
+        a = self.answers[qid]
+        if not isinstance(a, ChoiceAnswer):
+            raise TypeError(f"{qid!r} is not a Choice answer")
+        return a.choice, a.confidence
+
+    def score(self, qid: str) -> float:
+        a = self.answers[qid]
+        if not isinstance(a, ScoreAnswer):
+            raise TypeError(f"{qid!r} is not a Score answer")
+        return a.score
 
 
 def _config(api_key: str | None, base_url: str | None, model: str | None):
@@ -53,30 +76,21 @@ def _config(api_key: str | None, base_url: str | None, model: str | None):
     if not key:
         raise AuthError("missing API key: pass api_key or set TYPESAFE_API_KEY")
     base = (base_url or os.environ.get("TYPESAFE_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
+    if not base.startswith("https://"):
+        raise AuthError(f"base_url must be https, got {base!r}")
     mdl = model or os.environ.get("TYPESAFE_DEFAULT_MODEL", DEFAULT_MODEL)
     return key, base, mdl
 
 
-def _error(status: int | None, body: bytes) -> JevError:
-    try:
-        detail = json.loads(body or b"{}")
-    except ValueError:
-        detail = {}
-    msg = str(detail.get("message") or detail or f"HTTP {status}")
-    if status in (401, 403):
-        return AuthError(msg, status=status)
-    if status == 422:
-        return ValidationError(msg, status=status)
-    if status == 429:
-        return RateLimitError(msg, status=status)
-    if status == 529:
-        return OverloadedError(msg, status=status)
-    if status and status >= 500:
-        return ServerError(msg, status=status)
-    return JevError(msg, status=status)
+class _Transient(JevError):
+    """Network-level failure (DNS, refused, timeout). Always retryable."""
+
+    @property
+    def retryable(self) -> bool:
+        return True
 
 
-def _post(url: str, key: str, payload: dict, timeout: float) -> tuple[int, dict, Mapping[str, str]]:
+def _post(url: str, key: str, payload: dict, timeout: float) -> tuple[Any, bytes, Any]:
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode(),
@@ -84,9 +98,12 @@ def _post(url: str, key: str, payload: dict, timeout: float) -> tuple[int, dict,
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read() or b"{}"), r.headers
+            return r.status, r.read() or b"{}", r.headers
     except urllib.error.HTTPError as e:
-        return e.code, {}, e.headers
+        status = e.code if isinstance(e.code, int) else None
+        return status, e.read() or b"{}", e.headers
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise _Transient(f"transport failure: {e}") from e
 
 
 def _retry_after(headers: Mapping[str, str]) -> float | None:
@@ -102,6 +119,65 @@ def _retry_after(headers: Mapping[str, str]) -> float | None:
     return None
 
 
+def _payload(state: Any, questions: Mapping[str, Any], model: str) -> dict:
+    return {
+        "state": state,
+        "model": model,
+        "questions": {k: _q.to_json(v) for k, v in questions.items()},
+    }
+
+
+def _decode(body: bytes) -> Response:
+    try:
+        data = json.loads(body or b"{}")
+    except ValueError as e:
+        raise JevError(f"invalid JSON response: {e}") from e
+    if not isinstance(data, dict):
+        raise JevError("invalid response envelope")
+    answers = {k: parse_answer(k, v) for k, v in data.get("answers", {}).items()}
+    usage = data.get("usage", {})
+    return Response(
+        answers=answers,
+        model=str(data.get("model", "")),
+        usage=dict(usage) if isinstance(usage, dict) else {},
+        request_id=data.get("request_id"),
+    )
+
+
+def _call_with_retry(post, policy: RetryPolicy) -> tuple[int | None, bytes, Mapping[str, str]]:
+    wait = policy.backoff_initial
+    attempt = 0
+    while True:
+        try:
+            status, body, headers = post()
+        except _Transient:
+            if attempt >= policy.max_retries:
+                raise
+            status, body, headers = None, b"{}", {}
+        if status is None or status in RETRYABLE:
+            if attempt >= policy.max_retries:
+                if status is None:
+                    raise _Transient("transport failure after retries")
+                from .errors import JevError as _JE
+
+                raise _JE.from_status(status, _message(body), None)
+            delay = _retry_after(headers) or wait
+            delay = min(delay, policy.backoff_max)
+            time.sleep(delay + random.uniform(0, delay * policy.jitter))
+            wait = min(wait * 2, policy.backoff_max)
+            attempt += 1
+            continue
+        return status, body, headers
+
+
+def _message(body: bytes) -> str:
+    try:
+        detail = json.loads(body or b"{}")
+    except ValueError:
+        return f"HTTP error ({len(body)} bytes)"
+    return str(detail.get("message") or detail or "HTTP error")
+
+
 class Client:
     """Sync client. Reads TYPESAFE_API_KEY / TYPESAFE_BASE_URL / TYPESAFE_DEFAULT_MODEL."""
 
@@ -111,7 +187,7 @@ class Client:
         base_url: str | None = None,
         model: str | None = None,
         retry: RetryPolicy | None = None,
-    ):
+    ) -> None:
         self.api_key, self.base_url, self.model = _config(api_key, base_url, model)
         self.retry = retry or RetryPolicy()
 
@@ -121,43 +197,30 @@ class Client:
         questions: Mapping[str, Any],
         model: str | None = None,
     ) -> Response:
-        payload = {
-            "state": state,
-            "model": model or self.model,
-            "questions": {k: _q.to_json(v) for k, v in questions.items()},
-        }
+        payload = _payload(state, questions, model or self.model)
         url = f"{self.base_url}/v1/systemone"
         policy = self.retry
-        wait = policy.backoff_initial
-        attempt = 0
-        while True:
-            status, body, headers = _post(url, self.api_key, payload, policy.timeout)
-            if status is not None and status not in RETRYABLE:
-                if status >= 400:
-                    raise _error(status, json.dumps(body).encode())
-                break
-            if attempt >= policy.max_retries:
-                raise _error(status, json.dumps(body).encode())
-            delay = _retry_after(headers) or wait
-            time.sleep(min(delay, policy.backoff_max))
-            wait = min(wait * 2, policy.backoff_max)
-            attempt += 1
-        answers = {k: parse_answer(k, v) for k, v in body.get("answers", {}).items()}
-        return Response(
-            answers=answers,
-            model=str(body.get("model", "")),
-            usage=dict(body.get("usage", {})),
-            request_id=body.get("request_id"),
-        )
+
+        def post():
+            return _post(url, self.api_key, payload, policy.timeout)
+
+        status, body, _ = _call_with_retry(post, policy)
+        if status is not None and status >= 400:
+            from .errors import JevError as _JE
+
+            raise _JE.from_status(status, _message(body), None)
+        return _decode(body)
 
     # Vercel-flavored alias: evaluate(state, questions) in one call.
-    def evaluate(self, state: Any, questions: Mapping[str, Any], model: str | None = None) -> Response:
+    def evaluate(
+        self, state: Any, questions: Mapping[str, Any], model: str | None = None
+    ) -> Response:
         return self.system_one(state, questions, model)
 
     def close(self) -> None:
         pass
 
-    def __enter__(self) -> "Client":
+    def __enter__(self) -> Client:
         return self
 
     def __exit__(self, *exc: Any) -> None:
@@ -167,16 +230,26 @@ class Client:
 class AsyncClient:
     """Async client (stdlib; runs the sync transport in a thread)."""
 
-    def __init__(self, **kwargs: Any):
-        self._sync = Client(**kwargs)
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        model: str | None = None,
+        retry: RetryPolicy | None = None,
+    ) -> None:
+        self._sync = Client(api_key=api_key, base_url=base_url, model=model, retry=retry)
 
-    async def system_one(self, state: Any, questions: Mapping[str, Any], model: str | None = None) -> Response:
+    async def system_one(
+        self, state: Any, questions: Mapping[str, Any], model: str | None = None
+    ) -> Response:
         return await asyncio.to_thread(self._sync.system_one, state, questions, model)
 
-    async def evaluate(self, state: Any, questions: Mapping[str, Any], model: str | None = None) -> Response:
+    async def evaluate(
+        self, state: Any, questions: Mapping[str, Any], model: str | None = None
+    ) -> Response:
         return await self.system_one(state, questions, model)
 
-    async def __aenter__(self) -> "AsyncClient":
+    async def __aenter__(self) -> AsyncClient:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
@@ -188,4 +261,4 @@ def evaluate(state: Any, questions: Mapping[str, Any], model: str | None = None)
     return Client().evaluate(state, questions, model)
 
 
-__all__ = ["AsyncClient", "Client", "Response", "RetryPolicy", "evaluate", "field"]
+__all__ = ["AsyncClient", "Client", "Response", "RetryPolicy", "evaluate"]

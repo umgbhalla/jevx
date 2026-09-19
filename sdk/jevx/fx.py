@@ -20,7 +20,7 @@ import json
 from typing import Any
 
 from .answers import parse_answer
-from .client import Client, Response
+from .client import Client
 
 _stack: contextvars.ContextVar = contextvars.ContextVar("jevx_drivers", default=())
 
@@ -30,6 +30,10 @@ class Ask:
     run(); the driver answers. Never construct answers yourself."""
 
     def __init__(self, questions: dict, state: Any = ""):
+        if not isinstance(questions, dict) or not questions:
+            raise ValueError("Ask needs a non-empty questions dict")
+        if not all(isinstance(k, str) for k in questions):
+            raise ValueError("Ask question ids must be strings")
         self.questions = questions
         self.state = state
 
@@ -38,19 +42,44 @@ class Ask:
         return answers
 
 
-def run(driver: "Driver", coro):
-    """Drive a coroutine to completion, answering every Ask via driver."""
+def run(driver: Driver, coro):
+    """Drive a coroutine to completion, answering every Ask via driver.
+
+    Driver errors are thrown back into the flow (try/finally honored);
+    the coroutine is always closed. The driver is published on the stack
+    so nested sync _decide calls see it.
+    """
+    tok = _stack.set(_stack.get() + (driver,))
     value = None
-    while True:
-        try:
-            yielded = coro.send(value)
-        except StopIteration as e:
-            return e.value
-        if not isinstance(yielded, Ask):
-            raise TypeError(f"flow yielded {type(yielded).__name__}, only Ask allowed")
-        payload = {k: (v.to_json() if hasattr(v, "to_json") else v)
-                   for k, v in yielded.questions.items()}
-        value = driver.answer(yielded.state, payload)
+    try:
+        while True:
+            try:
+                yielded = coro.send(value)
+            except StopIteration as e:
+                return e.value
+            if not isinstance(yielded, Ask):
+                raise TypeError(f"flow yielded {type(yielded).__name__}, only Ask allowed")
+            payload = {
+                k: (v.to_json() if hasattr(v, "to_json") else v)
+                for k, v in yielded.questions.items()
+            }
+            try:
+                value = driver.answer(yielded.state, payload)
+            except BaseException as e:
+                try:
+                    yielded = coro.throw(e)
+                except StopIteration as se:
+                    return se.value
+                payload = {
+                    k: (v.to_json() if hasattr(v, "to_json") else v)
+                    for k, v in yielded.questions.items()
+                }
+                value = driver.answer(yielded.state, payload)
+    finally:
+        _stack.reset(tok)
+        close = getattr(coro, "close", None)
+        if callable(close):
+            close()
 
 
 class Driver:
@@ -89,39 +118,63 @@ class ReplayDriver(Driver):
     """Serve a JSONL log in order; sha mismatch -> StaleReplay."""
 
     def __init__(self, path: str):
-        from .py import StaleReplay, _sha
+        from .py import StaleReplay
+        from .py import _sha
+
         self._StaleReplay = StaleReplay
         self._sha = _sha
-        self.rows = [json.loads(l) for l in open(path) if l.strip()]
+        with open(path) as fh:
+            self.rows = [json.loads(line) for line in fh if line.strip()]
         self.n = 0
 
     def answer(self, state: Any, questions: dict) -> dict[str, Any]:
         if self.n >= len(self.rows):
             raise self._StaleReplay("replay log exhausted")
         row = self.rows[self.n]
-        self.n += 1
+        for field in ("sha", "answers"):
+            if field not in row:
+                raise self._StaleReplay(f"replay row {self.n} missing {field!r}")
         if row["sha"] != self._sha(state, questions):
             raise self._StaleReplay(f"question mismatch at step {self.n}")
-        return {k: parse_answer(k, v) for k, v in row["answers"].items()}
+        self.n += 1
+        try:
+            return {k: parse_answer(k, v) for k, v in row["answers"].items()}
+        except (KeyError, TypeError, ValueError) as e:
+            raise self._StaleReplay(f"replay row {self.n - 1} malformed: {e}") from e
 
 
 class RecordDriver(Driver):
     """Delegate to inner driver, append every decision as JSONL."""
 
     def __init__(self, path: str, inner: Driver | None = None):
-        from .py import _freeze, _sha
+        import threading as _t
+
+        from .py import _freeze
+        from .py import _sha
+
         self._freeze, self._sha = _freeze, _sha
         self.path = path
         self.inner = inner or LiveDriver()
+        self._lock = _t.Lock()
 
     def answer(self, state: Any, questions: dict) -> dict[str, Any]:
         out = self.inner.answer(state, questions)
-        with open(self.path, "a") as fh:
-            fh.write(json.dumps({
-                "sha": self._sha(state, questions), "state": state,
-                "questions": questions,
-                "answers": {k: self._freeze(v) for k, v in out.items()},
-            }, default=str) + "\n")
+        line = (
+            json.dumps(
+                {
+                    "sha": self._sha(state, questions),
+                    "state": state,
+                    "questions": questions,
+                    "answers": {k: self._freeze(v) for k, v in out.items()},
+                },
+                default=str,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        with self._lock, open(self.path, "a") as fh:
+            fh.write(line)
+            fh.flush()
         return out
 
 
@@ -134,6 +187,9 @@ class ConditionDriver(Driver):
 
     def answer(self, state: Any, questions: dict) -> dict[str, Any]:
         out = self.inner.answer(state, questions)
+        unknown = [k for k in self.overrides if k not in questions]
+        if unknown:
+            raise KeyError(f"ConditionDriver: override for unknown question(s) {unknown}")
         for k, raw in self.overrides.items():
             if k in out:
                 out[k] = parse_answer(k, raw)
@@ -148,8 +204,16 @@ class TraceDriver(Driver):
         self.trace: list = []
 
     def answer(self, state: Any, questions: dict) -> dict[str, Any]:
+        import copy as _copy
+
         out = self.inner.answer(state, questions)
-        self.trace.append({"state": state, "questions": questions, "answers": out})
+        self.trace.append(
+            {
+                "state": _copy.deepcopy(state),
+                "questions": _copy.deepcopy(questions),
+                "answers": _copy.deepcopy(out),
+            }
+        )
         return out
 
 

@@ -7,8 +7,6 @@ list of findings; empty means clean.
 
 from __future__ import annotations
 
-from typing import Any
-
 
 def lint(questions: dict[str, dict]) -> list[str]:
     """questions: {qid: question-json}. Findings read like compiler errors."""
@@ -29,8 +27,10 @@ def lint(questions: dict[str, dict]) -> list[str]:
         elif ins.strip().endswith("?") is False and len(ins.split()) < 3:
             out.append(f"{qid}: instructions too short to be a judgment")
         if _mentions_param(ins):
-            out.append(f"{qid}: instructions name a parameter ({_mentions_param(ins)}), "
-                       "describe the idea instead")
+            out.append(
+                f"{qid}: instructions name a parameter ({_mentions_param(ins)}), "
+                "describe the idea instead"
+            )
         crit = q.get("criteria")
         if kind == "choice":
             if not isinstance(crit, dict) or not crit:
@@ -40,11 +40,16 @@ def lint(questions: dict[str, dict]) -> list[str]:
                     out.append(f"{qid}: {len(crit)} options exceeds 255 cap")
                 nulls = [k for k, v in crit.items() if v is None]
                 if len(nulls) == len(crit) and len(crit) > 4:
-                    out.append(f"{qid}: all {len(crit)} options undescribed; "
-                               "confusables need rubrics")
+                    out.append(
+                        f"{qid}: all {len(crit)} options undescribed; confusables need rubrics"
+                    )
                 for k, v in crit.items():
-                    if isinstance(v, str) and len(k) > 2 and k.lower() in v.lower() \
-                            and len(v.split()) < 4:
+                    if (
+                        isinstance(v, str)
+                        and len(k) > 2
+                        and k.lower() in v.lower()
+                        and len(v.split()) < 4
+                    ):
                         out.append(f"{qid}.{k}: rubric restates the name, add detail")
         if kind == "score":
             if not isinstance(crit, list) or len(crit) < 2:
@@ -61,6 +66,7 @@ def lint(questions: dict[str, dict]) -> list[str]:
 
 def _mentions_param(ins: str) -> str | None:
     import re
+
     m = re.search(r"\b(which|what)\s+([a-z_]+)\?", ins, re.I)
     if m and m.group(2).lower() in ("resolution", "option", "value", "choice", "format", "type"):
         return m.group(0)

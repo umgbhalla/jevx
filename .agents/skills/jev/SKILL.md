@@ -6,7 +6,10 @@ description: Fast structured decisions with Jev (TypeSafe System One). Use when 
 # Jev skill
 
 Jev is not an LLM: no text generation. `state` in, typed probabilities out.
-Endpoint `POST https://api.typesafe.ai/v1/systemone`, auth `Bearer $TYPESAFE_API_KEY`.
+Endpoint `POST https://api.typesafe.ai/v1/systemone` (base `https://api.typesafe.ai`),
+auth `Bearer $TYPESAFE_API_KEY`. Env: `TYPESAFE_API_KEY` (required),
+`TYPESAFE_BASE_URL`, `TYPESAFE_DEFAULT_MODEL` (default `jev-latest`).
+Response: `{answers, model, usage, request_id?}`.
 
 ## The one request shape
 
@@ -35,7 +38,8 @@ question about one state into a single call.
 
 1. One predicate per question; describe situations, not degrees.
 2. State holds facts (object preferred: `{ticket, order, policy}`); questions hold judgments. Never put the question inside the state.
-3. Threshold in code: high -> act, medium -> confirm/flag, low (<0.5 default floor) -> human. Scale bars with risk (destructive needs >0.9).
+3. Threshold in code: `P.over(0.5)` default; `band(review_at=0.35, act_at=0.70)` for
+   triage; `@gate over=0.8`, destructive needs >0.9. Scale bars with risk.
 4. Decompose broad judgments into atomic questions, combine with weights in code (composite scoring).
 5. Jev is text-only, English-best, weak on raw numbers (spell out sizes/dates). Never send secrets.
 
@@ -50,22 +54,26 @@ curl https://api.typesafe.ai/v1/systemone \
        "questions":{"urgent":{"type":"noul","instructions":"needs attention now?"}}}'
 ```
 
-Python (`pip install typesafe-sdk`):
+Python (`sdk/` here, stdlib-only; or `pip install typesafe-sdk` for official):
 ```python
-from typesafe_sdk import Noul, TypeSafeClient
-r = TypeSafeClient().system_one(state="...", questions={"u": Noul(instructions="Urgent?")})
-r.answers["u"].noul
+from jevx import Client, Noul
+r = Client().system_one(state="...", questions={"u": Noul(instructions="Urgent?")})
+r.noul("u")  # prob; NoulAnswer.prob. Choice: r.choice("t") -> (choice, conf)
 ```
 
-TS (`npm i @typesafe-ai/sdk`, or Vercel `@ai-sdk/typesafe-ai` + `experimental_evaluate`):
-```ts
-const r = await client.systemOne({state, questions:{team: choice("Which team?", {billing: "...", other: null})}});
-r.answers.team.choice
+Idiomatic layer (`sdk/jevx/py.py`):
+```python
+from jevx.py import feels, pick, Questions, ask
+from jevx.backends import Sim, Live
+if feels("urgent?", ticket, client=Sim({...}).s1()).over(0.8): ...
 ```
+
+TS lives outside this repo (`@typesafe-ai/sdk`, Vercel `@ai-sdk/typesafe-ai`).
+Here, `Client.evaluate(state, questions)` is the one-call equivalent.
 
 ## Loop patterns (details in .agents/research/)
 
 - Route: Choice over handlers/models, confidence-gated fallback to capable model
 - Gate: Noul risk check before each tool call; refuse, don't ask
 - Filter/rerank: Noul per candidate, sort desc; Choice over <=255 candidates
-- Supervise: 9 parallel Nouls estimating worker state; deterministic policy acts
+- Supervise: batch N Nouls estimating worker state in one call; deterministic policy acts
