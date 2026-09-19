@@ -26,7 +26,6 @@ from jevx.programs import session
 from jevx.programs import stuck
 from jevx.programs import tail
 from jevx.programs import topk
-from jevx.programs import verify_each
 from jevx.py import Predicate
 from jevx.py import feels
 from jevx.py import noul
@@ -154,7 +153,13 @@ def investigate(
         scores[cause] = float(p)
         return p
 
-    accepted, rejected = verify_each(candidates, supported, over=0.5)
+    accepted, rejected = [], []
+    for cause in candidates:
+        match supported(cause).band(review_at=0.5, act_at=0.75):
+            case "yes" | "review":
+                accepted.append(cause)
+            case "no":
+                rejected.append(cause)
     branch_nodes: dict[Cause, int] = {}
     for cause in candidates:
         branch_nodes[cause] = _append(

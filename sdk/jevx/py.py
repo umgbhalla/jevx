@@ -9,12 +9,20 @@ Pattern-match typed answers, declare typed batteries, and keep policy in Python.
     from jevx.py import Score
     from typing import Literal
 
-    if (noul("is this urgent?") & ~noul("does this expose private data?")).ask(ticket).over(0.8):
-        escalate(ticket)
+    safety = noul("is this urgent?") & ~noul("does this expose private data?")
+    match safety.ask(ticket).band(review_at=0.35, act_at=0.8):
+        case "yes":
+            escalate(ticket)
+        case "review":
+            ask_human(ticket)
+        case "no":
+            continue_normally(ticket)
 
     match pick("which team?", ticket, {"billing": "...", "bug": "..."}):
         case ChoiceAnswer(choice="billing", confidence=c) if c > 0.9:
             bill(ticket)
+        case ChoiceAnswer(choice="bug", confidence=c) if c > 0.9:
+            debug(ticket)
         case ChoiceAnswer(choice=team):
             triage(team, ticket)
 

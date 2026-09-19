@@ -26,8 +26,13 @@ expression before evaluation, so all distinct leaves go in one request.
 from jevx import noul
 
 safe_to_send = noul("does this answer the request?") & ~noul("does it reveal private data?")
-if safe_to_send.ask(ticket).over(0.8):
-    send(ticket)
+match safe_to_send.ask(ticket).band(review_at=0.35, act_at=0.8):
+    case "yes":
+        send(ticket)
+    case "review":
+        ask_for_review(ticket)
+    case "no":
+        keep_draft(ticket)
 ```
 
 `P` combines evaluated degrees. `Predicate` combines questions. Its `&` uses
@@ -36,6 +41,22 @@ complement. These are fuzzy degrees, not calibrated joint probabilities.
 
 Question batteries use `.ask(state)`. Type choice answers with `Literal` so
 static checkers can narrow their value, then branch with `match`.
+
+`match` also works well on choice answers and on `P.band()` results. The
+expression operators compose first; `.ask()` batches the leaves once; `match`
+then handles each explicit outcome.
+
+```python
+from jevx import ChoiceAnswer, pick
+
+match pick("which team?", ticket, {"billing": "charges", "bug": "defects"}):
+    case ChoiceAnswer(choice="billing", confidence=c) if c >= 0.8:
+        route_billing(ticket)
+    case ChoiceAnswer(choice="bug", confidence=c) if c >= 0.8:
+        route_bug(ticket)
+    case ChoiceAnswer(choice=team):
+        request_human_review(team, ticket)
+```
 
 For multi-turn work, `task()` binds both backends and records a parent-linked
 history. `run.context()` gives the current branch a short ancestor summary;
