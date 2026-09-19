@@ -1,8 +1,9 @@
-"""Staged PR review gate: S1 screens, profiles, evidences, judges; S2 fixes.
+"""Staged PR review funnel: screen -> profile -> locate -> mechanism -> severity -> route.
 
-Bounds everywhere: MAX_FOLLOW_UPS files, MAX_PROFILES, 3 fix rounds, 8 hunks
-per round, fail-closed on timeout. Auto-merge bar: 0 blocking, 0 unverified
-contradictions, all injections dropped. Security paths force priority + owner.
+Ports: verbatim 5-Noul screen, category Choice + priority Score, evidence-hunk
+Choice with noMatch exit, per-dimension mechanism with noIssue exit, severity
+Score, conditional owner route. Thresholds 0.70 / 0.55 / 1.5 / 2.0.
+Findings are review prompts, not proof of defect — S2 fixes, S1 re-checks.
 """
 
 from __future__ import annotations
@@ -13,72 +14,82 @@ from jevx.client import Client
 from jevx.py import Questions, Score, ask, feels
 from jevx.s2 import CodexSystem2, System2
 
-MAX_FOLLOW_UPS = 8
-MAX_PROFILES = 5
-MAX_ROUNDS = 3
+SCREEN_AT, LOCATE_AT, ROUTE_SEV, BLOCK_SEV = 0.70, 0.55, 1.5, 2.0
+MAX_FOLLOW_UPS, MAX_PROFILES, MAX_ROUNDS, HUNKS_PER_ROUND = 8, 5, 3, 8
 SEC_PATHS = ("auth/", "crypto/", "secrets")
 
 
-class RiskMatrix(Questions):
-    correctness: bool = ask("could this cause incorrect runtime behavior?", threshold=0.70)
-    security: bool = ask("could this cause a security issue?", threshold=0.70)
-    reliability: bool = ask("could this cause crashes or hangs?", threshold=0.70)
-    test_gap: bool = ask("is changed behavior missing test coverage?", threshold=0.70)
+class Screen(Questions):
+    correctness: bool = ask("Does the patch directly support that this change likely introduces incorrect runtime behavior?", threshold=SCREEN_AT)
+    security: bool = ask("Does the patch directly support that this change introduces or weakens a security boundary?", threshold=SCREEN_AT)
+    reliability: bool = ask("Does the patch directly support that this change can crash, race, leak, deadlock, or recover poorly?", threshold=SCREEN_AT)
+    compatibility: bool = ask("Does the patch directly support that this change can break an existing caller, format, protocol, or public behavior?", threshold=SCREEN_AT)
+    test_gap: bool = ask("Does the patch change important behavior without adequate targeted evidence in changed tests?", threshold=SCREEN_AT)
 
 
 class Profile(Questions):
     category: Literal["behavior", "interface", "infrastructure", "observability",
-                      "refactor", "routine"] = ask("what kind of change?")
-    priority: Score["low", "notable", "high", "urgent"] = ask("review priority?")
+                      "refactor", "routine"] = ask("Which category best describes the patch?")
+    priority: Score["low", "notable", "high", "urgent"] = ask("Rate how closely a human should review the patch.")
 
 
 class Finding(Questions):
     mechanism: Literal["authorization", "injection", "exposure", "unsafe_default",
-                       "logic", "no_issue"] = ask("failure mechanism?")
-    severity: Score["cosmetic", "notable", "high", "blocking"] = ask("severity?")
-    owner: Literal["security", "api", "runtime", "testing", "maintainer"] = ask("owning team?")
+                       "logic", "race", "leak", "no_issue"] = ask("Which mechanism best describes the suspected concern supported by the selected evidence?")
+    severity: Score["cosmetic", "notable", "high", "blocking"] = ask("Assuming the evidence exhibits the concern, rate the likely production impact.")
+    owner: Literal["security", "api", "runtime", "testing", "maintainer"] = ask("Which reviewer is best suited to investigate this concern?")
+
+
+def _pick(prompt: str, state: dict, options: dict, s1) -> tuple[str, float]:
+    from jevx.py import pick
+    c = pick(prompt, state, options, client=s1)
+    return c.choice, c.confidence
 
 
 def review(pr: dict, s1: Client | None = None, s2: System2 | None = None) -> dict:
     """pr: {files: [{path, patch, hunks: [ids], changed_tests: [...]}, ...]}."""
+    from jevx.prompts import render
     s2 = s2 or CodexSystem2()
-    findings, followed = [], 0
+    findings, followed, profiled = [], 0, 0
     for f in pr["files"]:
-        if followed >= MAX_FOLLOW_UPS:
+        if followed >= MAX_FOLLOW_UPS or profiled >= MAX_PROFILES:
             break
-        m = RiskMatrix(client=s1)({"patch": f["patch"][:3000],
-                                   "tests": f.get("changed_tests", [])})  # 1 req
-        if not (m.correctness or m.security or m.reliability or m.test_gap):
+        m = Screen(client=s1)({"patch": f["patch"][:3000],
+                               "changed_tests": f.get("changed_tests", [])})  # 1 req
+        if not (m.correctness or m.security or m.reliability or m.compatibility or m.test_gap):
             continue
         followed += 1
         p = Profile(client=s1)({"patch": f["patch"][:3000]})  # 1 req
         prio = float(p.priority) + (0.5 if f["path"].startswith(SEC_PATHS) else 0.0)
         if prio < 1.0:
             continue
-        for hunk in f.get("hunks", [])[:8]:
-            ev = feels("does this hunk support the suspected concern?",
-                       {"hunk": hunk, "patch": f["patch"][:3000]}, client=s1)
-            if ev.under(0.55):
+        profiled += 1
+        for hunk in f.get("hunks", [])[:HUNKS_PER_ROUND]:
+            ev, ev_conf = _pick("Which candidate hunk provides the strongest direct evidence "
+                                "for the suspected concern?",
+                                {"hunk": hunk, "patch": f["patch"][:3000]},
+                                {"hunk": "this hunk", "noMatch": "no hunk shows it"}, s1)
+            if ev == "noMatch" or ev_conf < LOCATE_AT:
                 continue
             fin = Finding(client=s1)({"hunk": hunk, "path": f["path"]})  # 1 req
             if fin.mechanism == "no_issue":
                 continue
-            findings.append({"file": f["path"], "hunk": hunk,
-                             "mechanism": fin.mechanism,
+            findings.append({"file": f["path"], "hunk": hunk, "mechanism": fin.mechanism,
                              "severity": float(fin.severity),
                              "owner": "security" if f["path"].startswith(SEC_PATHS) else fin.owner})
 
-    blocking = [x for x in findings if x["severity"] >= 2.0]
+    blocking = [x for x in findings if x["severity"] >= BLOCK_SEV]
     if not blocking:
-        return {"action": "MERGE", "findings": findings}
-    for rnd in range(MAX_ROUNDS):
+        return {"action": "comment" if findings else "approve", "findings": findings}
+    for _ in range(MAX_ROUNDS):
         worst = max(blocking, key=lambda x: x["severity"])
-        fix = s2.ask(f"Fix {worst['file']}:{worst['hunk']} mechanism={worst['mechanism']} "
-                     f"severity={worst['severity']}. Cite lines, add a regression test.")
+        fix = s2.ask(render("fix", file=worst["file"], hunk=worst["hunk"],
+                            mechanism=worst["mechanism"], severity=f"{worst['severity']:.1f}"))
         ok = feels("does this fix resolve the finding with a regression test?",
                    {"finding": worst, "fix": fix}, client=s1)
         if ok.over(0.80):
-            blocking.remove(worst)
+            blocking = [b for b in blocking if not (
+                b["file"] == worst["file"] and b["hunk"] == worst["hunk"])]
             if not blocking:
-                return {"action": "MERGE", "findings": findings, "rounds": rnd}
-    return {"action": "REQUEST_CHANGES", "blocking": blocking, "findings": findings}
+                return {"action": "approve", "findings": findings}
+    return {"action": "request_changes", "blocking": blocking, "findings": findings}
