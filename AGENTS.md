@@ -1,38 +1,19 @@
 # AGENTS.md
 
-Research repo for Jev (TypeSafe AI System One model): API notes, benchmarks,
-community experiments, and agent-loop patterns. Read-only research — no app code.
+Jev (TypeSafe System One) research + Python SDK where S1 (Jev, algebraic)
+drives S2 (Codex, organic). Examples run on scripted backends; live needs keys.
 
 ## Layout
 
-- `00-quickstart.py` — raw HTTP + SDK hello-world (needs `TYPESAFE_API_KEY`)
-- `sdk/jevx/` — Python SDK: stdlib-only client + idiomatic `py` layer
-  - `client.py` — sync/async clients, retries, `evaluate()` one-shot
-  - `py.py` — `feels`/`pick`/`rate`, `P`/`Score`, matchable `Choice`,
-    declarative `Questions`, `@gate`/`@route`, `record`/`replay`
-  - `questions.py`, `answers.py`, `errors.py` — builders, typed answers, errors
-  - `s2.py`, `risk.py` — System 2 backends (Codex/Fake), CRAP-style risk()
-- `sdk/examples/` — S1-drives-S2 flows (scripted backends; needs keys for live):
-  support_copilot, code_supervisor, incident_loop, invoice_cascade,
-  rag_guard, browser_loop (FakeBrowser), review_gate, conteval
+- `sdk/` — uv project (`uv run pytest`, `uv lock`)
+- `sdk/jevx/` — client, idiomatic `py` layer, `relational`, `lint`, `prompts`,
+  `s2` backends, `risk`
+- `sdk/examples/` — 18 flows: support_copilot, code_supervisor, incident_loop,
+  invoice_cascade, rag_guard, browser_loop, review_gate, conteval,
+  floor_supervisor, skill_router, context_compact, model_router, graph_nav,
+  trader_loop, game_loop, test_select, shell_gate, robot_loop
 - `.agents/skills/jev/SKILL.md` — condensed Jev usage for agents (start here)
-- `.agents/research/` — deep notes, one topic per file:
-  - `api-spec.md` — endpoint, Noul/Choice/Score schemas, errors, limits
-  - `question-apis.md` — per-type deep dives + SDK surface comparison + cookbook index
-  - `patterns.md` — fan-out, confidence gating, composite scoring, intent routing
-  - `langchain.md` — TypeSafeClassifier, ModelRouterMiddleware, AutoModeMiddleware
-  - `benchmarks.md` — evals.typesafe.ai + consistency numbers + independent GH benchmarks
-  - `community.md` — what people build (browser/trading/email/guardrails/games)
-  - `ts-scouts.md` — TypeScript ecosystem findings (Vercel provider, loops, starters)
-  - `classification-ideas.md` — community "restate it as classification" ideas
-- `README.md` — human overview
-
-## Setup
-
-```bash
-export TYPESAFE_API_KEY=...   # from https://console.typesafe.ai/
-python3 00-quickstart.py       # raw HTTP; USE_SDK=1 for typesafe-sdk path
-```
+- `.agents/research/` — deep notes, one topic per file (see dir)
 
 ## Jev essentials (see SKILL.md for full)
 

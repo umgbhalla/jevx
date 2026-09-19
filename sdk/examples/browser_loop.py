@@ -31,6 +31,21 @@ OP_DESCRIPTIONS = {
 TARGET_INSTRUCTIONS = ("Choose the best observed target if the next operation is "
                        "the one specified in this question. Do not choose a field that "
                        "already contains the requested value. Choose only an offered element index.")
+WATCH_DONE_AT, WATCH_STUCK_AT = 0.85, 0.85
+
+
+class Watch(Questions):
+    goal_done: bool = ask("The goal is achieved: the page and history show the sought outcome.",
+                          threshold=WATCH_DONE_AT)
+    stuck: bool = ask("Actions so far make no progress (repeats, loops, no change); "
+                       "a different strategy is needed.", threshold=WATCH_STUCK_AT)
+
+
+def pick_alternate(probs: dict, banned: set) -> str | None:
+    for k, _ in sorted(probs.items(), key=lambda kv: -kv[1]):
+        if k not in banned and probs[k] > 0:
+            return k
+    return None
 NEXT_ACTION = ("Advance the entire goal from the CURRENT page using one operation. "
                "Do not repeat satisfied steps. DONE requires visible evidence ALL "
                "requirements are satisfied. WAIT only when a needed control is absent or disabled.")
@@ -106,6 +121,7 @@ def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, fl
              "elements": snap["elements"], "recent_actions": recent[-10:]}
     op = pick(NEXT_ACTION, state, ops, client=s1)
     validate_choice(op.choice, op.probabilities)
+    choose._last_probs = dict(op.probabilities)
     heads = {"CLICK": "click_target", "TYPE_TEXT": "type_text_target",
              "SELECT": "select_target", "SUBMIT": "submit_target"}
     if op.choice not in heads:
@@ -113,6 +129,7 @@ def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, fl
     tgt = pick(TARGET_INSTRUCTIONS + f" Operation under consideration: {op.choice}.",
                state, {e["index"]: e.get("label") for e in snap["elements"]}, client=s1)
     validate_choice(tgt.choice, tgt.probabilities)
+    choose._last_tgt_probs = dict(tgt.probabilities)
     return op.choice, tgt.choice, min(op.confidence, tgt.confidence)
 
 
@@ -122,11 +139,29 @@ def reconcile(goal: str, browser: FakeBrowser, s1: Client | None = None,
     recent, paid, unchanged = [], [], 0
     pending: dict = {}
     last_text = ""
+    last_proposed: tuple = ("", "")
+    prev_changed = True
+    same_misses = 0
     for _ in range(max_steps):
         snap = browser.snapshot()  # observe
         if browser.logged_in and all(r["paid"] for r in browser.rows):
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
         op, tgt, conf = choose(goal, snap, recent, s1)
+        # pre-exec watcher gates (same state, one extra request)
+        w = Watch(client=s1)({"goal": goal, "page": snap, "history": recent[-10:]})
+        if w.goal_done:
+            return {"action": "DONE", "paid": paid, "steps": len(recent)}
+        if w.stuck and len(recent) > 2:
+            return {"action": "REPLAN", "why": "watcher: stuck", "log": browser.log}
+        if (op, tgt) == last_proposed and not prev_changed and op not in ("WAIT",):
+            same_misses += 1
+            if same_misses >= 2:
+                alt = pick_alternate(dict(getattr(choose, "_last_tgt_probs", {})), {tgt or ""})
+                if alt:
+                    tgt = alt
+        else:
+            same_misses = 0
+        last_proposed = (op, tgt)
         if op == "DONE":
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
         if op == "BLOCKED":
@@ -147,10 +182,12 @@ def reconcile(goal: str, browser: FakeBrowser, s1: Client | None = None,
             if "marked paid" not in out.get("toast", "") or before == after:
                 recent.append({"op": op, "target": tgt, "page_changed": False})
                 unchanged += 1
+                prev_changed = False
                 if unchanged >= 3:
                     return {"action": "BLOCKED", "why": "3x no state change", "log": browser.log}
                 continue  # stale: re-observe, no mutation retry
             unchanged = 0
+            prev_changed = True
             paid.append(browser.rows[browser.page]["id"])
             recent.append({"op": op, "target": tgt, "page_changed": True})
             if browser.page < len(browser.rows) - 1:
@@ -163,6 +200,7 @@ def reconcile(goal: str, browser: FakeBrowser, s1: Client | None = None,
             changed = True
         recent.append({"op": op, "target": tgt, "page_changed": changed})
         unchanged = 0 if changed else unchanged + 1
+        prev_changed = changed
         if unchanged >= 3:
             return {"action": "BLOCKED", "why": "3x no state change", "log": browser.log}
     return {"action": "BUDGET_EXHAUSTED", "paid": paid}
