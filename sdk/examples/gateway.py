@@ -7,13 +7,15 @@ thin stdlib http.server wiring included but never required.
 
 from __future__ import annotations
 
+from jevx.answers import ChoiceAnswer
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
 
 
 @ensure(
-    lambda *a, result=None, **k: "handler" in result or "status" in result,
+    lambda *a, result=None, **k: result is not None
+    and ("handler" in result or "status" in result),
     msg="route resolves or 404s",
 )
 def route_request(
@@ -33,14 +35,16 @@ def route_request(
         {n: r["description"] for n, r in routes.items()},
         client=s1,
     )
-    if c.confidence < conf_at:
-        return {"status": 404, "route": None, "confidence": c.confidence}
-    return {
-        "status": 200,
-        "route": c.choice,
-        "confidence": c.confidence,
-        "handler": routes[c.choice]["handler"],
-    }
+    match c:
+        case ChoiceAnswer(confidence=confidence) if confidence < conf_at:
+            return {"status": 404, "route": None, "confidence": confidence}
+        case ChoiceAnswer(choice=name, confidence=confidence):
+            return {
+                "status": 200,
+                "route": name,
+                "confidence": confidence,
+                "handler": routes[name]["handler"],
+            }
 
 
 def serve(
@@ -65,7 +69,7 @@ def serve(
 
         do_GET = do_POST = _run
 
-        def log_message(self, *a):
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
     HTTPServer((host, port), H).serve_forever()

@@ -37,14 +37,17 @@ def choose(
     except Exception:
         return {"tier": current, "why": "S1 error, fail closed"}
     risky_p = float(r.answers["risky"].prob)
-    if risky_p > 0.7:
-        return {"tier": "deep", "effort": max(float(r.effort), 2.0), "why": "risky"}
     want, conf = r.tier, r.confidence("tier") or 0.0
     ci, wi = TIERS.index(current), TIERS.index(want)
-    if wi > ci and conf >= up_at:
-        return {"tier": want, "effort": float(r.effort), "why": "upgrade"}
-    if wi < ci and conf >= down_at:
-        return {"tier": want, "effort": float(r.effort), "why": "downgrade"}
-    if wi == ci:
-        return {"tier": current, "effort": float(r.effort), "why": "stay"}
-    return {"tier": current, "effort": float(r.effort), "why": "bars not met"}
+    delta = wi - ci
+    match (risky_p > 0.7, delta, conf):
+        case (True, _, _):
+            return {"tier": "deep", "effort": max(float(r.effort), 2.0), "why": "risky"}
+        case (False, change, confidence) if change > 0 and confidence >= up_at:
+            return {"tier": want, "effort": float(r.effort), "why": "upgrade"}
+        case (False, change, confidence) if change < 0 and confidence >= down_at:
+            return {"tier": want, "effort": float(r.effort), "why": "downgrade"}
+        case (False, 0, _):
+            return {"tier": current, "effort": float(r.effort), "why": "stay"}
+        case _:
+            return {"tier": current, "effort": float(r.effort), "why": "bars not met"}

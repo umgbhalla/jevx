@@ -74,7 +74,8 @@ def _parse_extraction(text: str) -> dict | None:
 
 @ensure(
     lambda *a, result=None, **k: (
-        result["action"]
+        result is not None
+        and result["action"]
         in (
             "FRAUD_REVIEW",
             "HOLD",
@@ -147,15 +148,22 @@ def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = N
     r = Release(client=s1).ask({"invoice": inv, "po_status": po})  # 1 request
     conf = 1.0 - max(float(r.answers["over_cap"].prob), float(r.answers["withholds"].prob))
     v = verdict(risk(blast, conf), review_at=1.5, refuse_at=4.0)
-    if r.withholds or v == "refuse":
-        return {
-            "action": "HOLD",
-            "why": "withheld or risk-refused",
-            "risk": v,
-            "problems": problems,
-        }
-    if r.over_cap or v == "review":
-        action = "SHORT_PAY" if po != "not_ours" else "PROCUREMENT_REVIEW"
-        return {"action": action, "problems": problems}
-    out = list(ledger) + [inv]
-    return {"action": "RELEASED", "inv_no": inv.get("inv_no"), "ledger": out, "problems": problems}
+    match (r.withholds, v, r.over_cap, po):
+        case (True, _, _, _) | (_, "refuse", _, _):
+            return {
+                "action": "HOLD",
+                "why": "withheld or risk-refused",
+                "risk": v,
+                "problems": problems,
+            }
+        case (_, "review", _, _) | (_, _, True, _):
+            action = "SHORT_PAY" if po != "not_ours" else "PROCUREMENT_REVIEW"
+            return {"action": action, "problems": problems}
+        case _:
+            out = list(ledger) + [inv]
+            return {
+                "action": "RELEASED",
+                "inv_no": inv.get("inv_no"),
+                "ledger": out,
+                "problems": problems,
+            }

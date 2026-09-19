@@ -10,6 +10,7 @@ import json
 from typing import Any
 
 from jevx import Backend
+from jevx import ChoiceAnswer
 from jevx import Live
 from jevx import Questions
 from jevx import ask
@@ -75,18 +76,25 @@ def respond(
                 {**run.context(), "logs": logs[-4000:], "round": round_no},
                 HYPOTHESES,
             )
-            if h.confidence < 0.5:
-                return _result(run, action="ESCALATE", why="hypothesis unsure", round=round_no)
-            if h.choice in RISKY_HYPOTHESES and approve is not None and not approve(h.choice, None):
-                return _result(
-                    run, action="APPROVAL", why=f"{h.choice} needs approval", round=round_no
-                )
+            match h:
+                case ChoiceAnswer(confidence=confidence) if confidence < 0.5:
+                    return _result(run, action="ESCALATE", why="hypothesis unsure", round=round_no)
+                case ChoiceAnswer(choice=cause, confidence=_) if (
+                    cause in RISKY_HYPOTHESES
+                    and approve is not None
+                    and not approve(cause, None)
+                ):
+                    return _result(
+                        run, action="APPROVAL", why=f"{cause} needs approval", round=round_no
+                    )
+                case ChoiceAnswer(choice=cause):
+                    pass
 
-            with run.branch(f"round {round_no}: {h.choice}", restore=False):
+            with run.branch(f"round {round_no}: {cause}", restore=False):
                 fix = run.s2.ask(
                     "Investigate and fix this incident.\n"
                     f"Task context: {json.dumps(run.context(), sort_keys=True)}\n"
-                    f"Hypothesis: {h.choice} ({HYPOTHESES[h.choice]})\n"
+                    f"Hypothesis: {cause} ({HYPOTHESES[cause]})\n"
                     f"Logs: {scrub(logs[-4000:])}"
                 )
                 new_logs = scrub(
@@ -101,7 +109,7 @@ def respond(
                         run,
                         action="RESOLVED",
                         rounds=round_no + 1,
-                        hypothesis=h.choice,
+                        hypothesis=cause,
                         sev=severity,
                     )
 

@@ -84,7 +84,8 @@ class SimBot:
 
 @ensure(
     lambda *a, result=None, **k: (
-        result["result"]
+        result is not None
+        and result["result"]
         in ("done", "aborted", "escalated", "confirm", "handover", "budget", "killed")
     ),
     msg="known mission result",
@@ -116,9 +117,11 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
                 return {"result": "handover", "why": "8 same verbs in a row"}
         else:
             repeats, last = 1, v
-        if v in contract.get("confirm", CONFIRM):
-            return {"result": "confirm", "verb": v, "obs": obs}
-        if v == "done":
-            return {"result": "done", "steps": step}
-        bot.exec(v)
+        match v:
+            case verb if verb in contract.get("confirm", CONFIRM):
+                return {"result": "confirm", "verb": verb, "obs": obs}
+            case "done":
+                return {"result": "done", "steps": step}
+            case command:
+                bot.exec(command)
     return {"result": "budget", "x": bot.x}

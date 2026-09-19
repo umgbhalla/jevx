@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
+from jevx.answers import ChoiceAnswer
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
@@ -23,7 +24,10 @@ class Room(Questions):
     quiet_hours: bool = ask("is it night/quiet hours?", threshold=0.6)
 
 
-@ensure(lambda *a, result=None, **k: isinstance(result["readings"], dict), msg="readings dict")
+@ensure(
+    lambda *a, result=None, **k: result is not None and isinstance(result["readings"], dict),
+    msg="readings dict",
+)
 def tick(state: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
     r = Room(client=s1).ask(state)  # 1 request
@@ -40,7 +44,7 @@ def tick(state: dict, backend: Backend | None = None) -> dict:
     }
 
 
-@ensure(lambda *a, result=None, **k: "action" in result, msg="intent resolves")
+@ensure(lambda *a, result=None, **k: result is not None and "action" in result, msg="intent resolves")
 def interpret(
     command: str, actions: dict, backend: Backend | None = None, floor: float = 0.6
 ) -> dict:
@@ -54,6 +58,8 @@ def interpret(
         dict(actions),
         client=s1,
     )
-    if c.confidence < floor:
-        return {"action": None, "why": "below floor", "top": c.choice}
-    return {"action": c.choice, "confidence": c.confidence}
+    match c:
+        case ChoiceAnswer(confidence=confidence) if confidence < floor:
+            return {"action": None, "why": "below floor", "top": c.choice}
+        case ChoiceAnswer(choice=action, confidence=confidence):
+            return {"action": action, "confidence": confidence}

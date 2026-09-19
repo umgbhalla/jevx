@@ -119,7 +119,8 @@ JUMP_MAP = {
 
 
 @ensure(
-    lambda *a, result=None, **k: result["result"] in ("won", "died", "timeout"),
+    lambda *a, result=None, **k: result is not None
+    and result["result"] in ("won", "died", "timeout"),
     msg="known game result",
 )
 @require(
@@ -132,10 +133,11 @@ def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
         snap = world.snapshot()
         t = Tick(client=s1).ask(snap)  # 1 request: Choice + Noul + Score
         a = t.action
-        if world.air > 0 and a in JUMP_HOLD:  # hold continuation: don't drop the jump mid-air
-            a = {"right_jump": "right_jump", "right_run_jump": "right_run_jump"}.get(a, a)
-        elif t.jump_needed:
-            a = JUMP_MAP.get(a, "jump")
+        match (world.air > 0, a in JUMP_HOLD, t.jump_needed):
+            case (True, True, _):  # hold the current jump macro while airborne
+                pass
+            case (_, _, True):
+                a = JUMP_MAP.get(a, "jump")
         world.step(a)
         trace.append(
             {

@@ -33,18 +33,23 @@ class Gate(Questions):
 
 def route_passage(p: dict, s1) -> str:
     g = Gate(client=s1).ask(p)  # 1 request
-    if g.injection:
-        return "exclude-injection"
-    if g.contradicts:
-        return "conflict"
-    if not g.relevant:
-        return "exclude"
-    return "include" if g.evidence else "exclude"
+    match (g.injection, g.contradicts, g.relevant, g.evidence):
+        case (True, _, _, _):
+            return "exclude-injection"
+        case (_, True, _, _):
+            return "conflict"
+        case (_, _, False, _):
+            return "exclude"
+        case (_, _, True, True):
+            return "include"
+        case _:
+            return "exclude"
 
 
 @ensure(
     lambda *a, result=None, **k: (
-        result["action"] in ("answer", "refute", "refuse-escalate", "human-review")
+        result is not None
+        and result["action"] in ("answer", "refute", "refuse-escalate", "human-review")
     ),
     msg="known rag action",
 )

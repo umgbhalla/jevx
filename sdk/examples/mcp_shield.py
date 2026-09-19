@@ -27,7 +27,8 @@ class Screen(Questions):
 
 
 @ensure(
-    lambda *a, result=None, **k: result["verdict"] in ("allow", "block", "review"),
+    lambda *a, result=None, **k: result is not None
+    and result["verdict"] in ("allow", "block", "review"),
     msg="known shield verdict",
 )
 def screen_call(tool: str, args: dict, backend: Backend | None = None) -> dict:
@@ -35,17 +36,21 @@ def screen_call(tool: str, args: dict, backend: Backend | None = None) -> dict:
         return {"verdict": "allow", "why": "read-only allowlist", "requests": 0}
     s1 = (backend or Live()).s1()
     s = Screen(client=s1).ask({"tool": tool, "args": args})  # 1 request
-    if s.malicious or s.exfiltrating:
-        return {"verdict": "block", "why": "malicious/exfiltrating", "severity": float(s.severity)}
-    if s.destructive and float(s.severity) >= 1.5:
-        return {"verdict": "block", "why": "destructive", "severity": float(s.severity)}
-    if s.destructive or float(s.severity) >= 1.0:
-        return {"verdict": "review", "severity": float(s.severity)}
-    return {"verdict": "allow", "severity": float(s.severity)}
+    severity = float(s.severity)
+    match (s.malicious or s.exfiltrating, s.destructive, severity):
+        case (True, _, _):
+            return {"verdict": "block", "why": "malicious/exfiltrating", "severity": severity}
+        case (_, True, score) if score >= 1.5:
+            return {"verdict": "block", "why": "destructive", "severity": severity}
+        case (_, destructive, score) if destructive or score >= 1.0:
+            return {"verdict": "review", "severity": severity}
+        case _:
+            return {"verdict": "allow", "severity": severity}
 
 
 @ensure(
-    lambda *a, result=None, **k: result["verdict"] in ("allow", "block", "review"),
+    lambda *a, result=None, **k: result is not None
+    and result["verdict"] in ("allow", "block", "review"),
     msg="known shield verdict",
 )
 def screen_result(tool: str, result_text: str, backend: Backend | None = None) -> dict:

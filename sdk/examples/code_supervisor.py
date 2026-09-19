@@ -34,7 +34,8 @@ class DiffCheck(Questions):
 
 
 @ensure(
-    lambda *a, result=None, **k: result["action"] in ("FINISH", "ESCALATE"),
+    lambda *a, result=None, **k: result is not None
+    and result["action"] in ("FINISH", "ESCALATE"),
     msg="known supervise action",
 )
 def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> dict:
@@ -44,21 +45,29 @@ def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> 
     if sc.complexity <= 0.5 and sc.testable:
         out = s2.ask(f"Do it, then run tests. Task: {task}")
         d = DiffCheck(client=s1).ask({"task": task, "diff": out})  # 1 request
-        if d.correct and d.risky is False and d.confidence("correct") >= 0.2:
-            return {"action": "FINISH", "mode": "trivial", "output": out}
-        return {"action": "ESCALATE", "why": "trivial path failed checks", "output": out}
+        match (d.correct, d.risky, d.confidence("correct") >= 0.2):
+            case (True, False, True):
+                return {"action": "FINISH", "mode": "trivial", "output": out}
+            case _:
+                return {"action": "ESCALATE", "why": "trivial path failed checks", "output": out}
 
     plan = s2.ask(f"Propose a short numbered plan only, no code. Task: {task}")
     pc = PlanCheck(client=s1).ask({"task": task, "plan": plan})  # 1 request
-    if not (pc.scoped and pc.has_tests):
-        return {"action": "ESCALATE", "why": "plan rejected", "plan": plan}
+    match (pc.scoped, pc.has_tests):
+        case (True, True):
+            pass
+        case _:
+            return {"action": "ESCALATE", "why": "plan rejected", "plan": plan}
 
     out = ""
     for i in range(max_fixes):
         out = s2.ask(f"Step {i}: implement per plan, run tests, show diff.\nPlan: {plan}")
         d = DiffCheck(client=s1).ask({"task": task, "diff": out})  # 1 request/turn
-        if d.correct and d.risky is False and d.confidence("correct") >= 0.2:
-            return {"action": "FINISH", "mode": "planned", "turns": i + 1, "output": out}
+        match (d.correct, d.risky, d.confidence("correct") >= 0.2):
+            case (True, False, True):
+                return {"action": "FINISH", "mode": "planned", "turns": i + 1, "output": out}
+            case _:
+                pass
         if d.severity >= 1.5:
             return {"action": "ESCALATE", "why": "blocking issues remain", "output": out}
     return {"action": "ESCALATE", "why": "fix budget exhausted", "output": out}

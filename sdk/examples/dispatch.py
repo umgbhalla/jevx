@@ -55,7 +55,8 @@ def handle_routed(state: dict, route: str, filled) -> str:
 
 
 @ensure(
-    lambda *a, result=None, **k: result["route"] in ("billing", "bug", "account", "spam"),
+    lambda *a, result=None, **k: result is not None
+    and result["route"] in ("billing", "bug", "account", "spam"),
     msg="known route",
 )
 def dispatch(ticket: str, backend: Backend | None = None) -> dict:
@@ -71,8 +72,13 @@ def dispatch(ticket: str, backend: Backend | None = None) -> dict:
         instructions="Which ticket handler does this call for?",
         client=bk.s1(),
     )
-    if isinstance(filled, dict):  # plain callable route took it
-        return {"route": name, **filled}
+    match (name, filled):
+        case ("spam", {"action": action}):  # plain callable route took it
+            return {"route": name, "action": action}
+        case ("billing" | "bug" | "account", _):
+            pass
+        case _:
+            raise AssertionError(f"route {name!r} returned an unexpected result")
     full_state = {"ticket": ticket, "route": name, "filled": filled.as_dict()}
     text, info = handle_routed(full_state, name, filled, client=bk.s1())
     if len(CALIB) > CALIB_MAX:
