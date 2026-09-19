@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, ask
 
 VERBS = ("forward", "back", "left", "right", "stop", "dock", "snapshot", "done")
@@ -66,7 +66,8 @@ class SimBot:
         return None
 
 
-def mission(bot: SimBot, contract: dict, s1, max_steps: int = 40) -> dict:
+def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> dict:
+    s1 = (backend or Live()).s1()
     """contract: {confirm: [...], budgets: {max_steps}, abort_when: [...]}."""
     repeats, last = 0, ""
     for step in range(min(max_steps, contract.get("budgets", {}).get("max_steps", max_steps))):

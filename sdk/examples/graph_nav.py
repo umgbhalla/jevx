@@ -8,11 +8,11 @@ termination, FreeText/TargetNode/PathIntent goal modes. In-memory graph.
 
 from __future__ import annotations
 
+from jevx.backends import Backend, Live
 import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from jevx.client import Client
 from jevx.py import Questions, ask, feels, pick
 
 MAX_OPTS, PER_TYPE, TOTAL = 255, 10, 60
@@ -76,10 +76,11 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
     return branches, bool(r.reached)
 
 
-def navigate(g: Graph, start: str, goal: dict, s1,
+def navigate(g: Graph, start: str, goal: dict, backend=None,
              max_depth: int = 4, max_calls: int = 24,
              top_k: int = 2, cutoff: float = 0.05, beam: int = 4) -> dict:
     """Beam search over (node, path, cum_log_prob, visited, depth)."""
+    s1 = (backend or Live()).s1()
     frontier = [{"node": start, "path": [start], "score": 0.0,
                  "visited": {start}, "depth": 0}]
     calls = 0

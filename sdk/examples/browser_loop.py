@@ -13,9 +13,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from jevx.client import Client
 from jevx.py import Questions, ask, pick
-from jevx.s2 import CodexSystem2, System2
+from jevx.s2 import System2
+from jevx.backends import Backend, Live
 
 OP_DESCRIPTIONS = {
     "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -133,9 +133,10 @@ def choose(goal: str, snap: dict, recent: list, s1) -> tuple[str, str | None, fl
     return op.choice, tgt.choice, min(op.confidence, tgt.confidence)
 
 
-def reconcile(goal: str, browser: FakeBrowser, s1: Client | None = None,
-              s2: System2 | None = None, max_steps: int = 60) -> dict:
-    s2 = s2 or CodexSystem2()
+def reconcile(goal: str, browser: FakeBrowser, backend: Backend | None = None,
+              max_steps: int = 60) -> dict:
+    bk = backend or Live()
+    s1, s2 = bk.s1(), bk.s2()
     recent, paid, unchanged = [], [], 0
     pending: dict = {}
     last_text = ""

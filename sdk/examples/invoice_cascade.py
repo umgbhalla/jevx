@@ -10,10 +10,9 @@ from __future__ import annotations
 import difflib
 from typing import Any, Literal
 
-from jevx.client import Client
 from jevx.py import Questions, Score, ask
 from jevx.risk import blast_of, risk, verdict
-from jevx.s2 import CodexSystem2, System2
+from jevx.backends import Backend, Live
 
 
 class Triage(Questions):
@@ -42,9 +41,10 @@ def _fuzzy_dupe(a: dict, b: dict) -> float:
     return difflib.SequenceMatcher(None, key(a), key(b)).ratio()
 
 
-def process(doc: dict, ledger: list[dict], fx: dict, s1: Client | None = None,
-            s2: System2 | None = None) -> dict:
+def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = None) -> dict:
     """doc: {text, vendor, currency, ...}; ledger: prior invoices; fx: {ccy: rate}."""
+    bk = backend or Live()
+    s1 = bk.s1()
     t = Triage(client=s1)(doc)  # 1 request
     if t.fraud:
         return {"action": "FRAUD_REVIEW"}
@@ -55,7 +55,7 @@ def process(doc: dict, ledger: list[dict], fx: dict, s1: Client | None = None,
     if t.wrong_vendor:
         return {"action": "REJECT"}
 
-    s2 = s2 or CodexSystem2()
+    s2 = bk.s2()
     ext = s2.ask(
         "Extract JSON only, verbatim values, no math: "
         "{inv_no,date,due,currency,total,tax,subtotal,lines[{desc,qty,unit,po_line}],bank}. "

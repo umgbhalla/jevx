@@ -8,13 +8,14 @@ share the same gate.
 
 from __future__ import annotations
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import feels
 
 
-def select(diff: str, tests: list[dict], s1: Client | None = None,
+def select(diff: str, tests: list[dict], backend: Backend | None = None,
            skip_at: float = 0.30, review_at: float = 0.70) -> dict:
     """tests: [{id, path, framework}]. Returns run/skip/review lists + stats."""
+    s1 = (backend or Live()).s1()
     run, skip, review = [], [], []
     for t in tests:
         q = ("No code changes detected. Could this test still be affected by "

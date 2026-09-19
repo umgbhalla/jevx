@@ -7,12 +7,16 @@ Swap the backend without touching the algebra: FakeSystem2 replays scripts.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Protocol, runtime_checkable
 
 
+@runtime_checkable
 class System2(Protocol):
+    """Existential backend: callers keep `ask` without knowing Codex vs fake."""
+
     def ask(self, prompt: str, **kwargs: Any) -> str: ...
     def new_thread(self) -> None: ...
+    def capabilities(self) -> frozenset: ...
 
 
 class CodexSystem2:
@@ -40,6 +44,9 @@ class CodexSystem2:
     def ask(self, prompt: str, **kwargs: Any) -> str:
         return self._thread.run(prompt, **kwargs).final_response
 
+    def capabilities(self) -> frozenset:
+        return frozenset({"live", "threads", "sandbox"})
+
     def close(self) -> None:
         self._cx.close()
 
@@ -62,3 +69,28 @@ class FakeSystem2:
         if not self.script:
             raise AssertionError("FakeSystem2 script exhausted")
         return self.script.pop(0)
+
+    def capabilities(self) -> frozenset:
+        return frozenset({"scripted"})
+
+
+class LazyS2:
+    """CodexSystem2 constructed on first ask (import + key needed only then)."""
+
+    def __init__(self, model: str = "gpt-5.6", sandbox: str = "workspace-write"):
+        self.model = model
+        self.sandbox = sandbox
+        self._real: CodexSystem2 | None = None
+
+    def new_thread(self) -> None:
+        self._real = None
+
+    def ask(self, prompt: str, **kwargs: Any) -> str:
+        if self._real is None:
+            self._real = CodexSystem2(model=self.model, sandbox=self.sandbox)
+        return self._real.ask(prompt, **kwargs)
+
+    def capabilities(self) -> frozenset:
+        if self._real is None:
+            return frozenset({"lazy"})
+        return self._real.capabilities()

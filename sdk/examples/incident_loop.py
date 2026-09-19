@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from jevx.client import Client
 from jevx.py import Questions, ask, feels
-from jevx.s2 import CodexSystem2, System2
+from jevx.backends import Backend, Live
 
 
 class Symptoms(Questions):
@@ -33,15 +32,16 @@ HYPOTHESES = {
 }
 
 
-def respond(logs: str, s1: Client | None = None, s2: System2 | None = None,
-            max_rounds: int = 4) -> dict:
+def respond(logs: str, backend: Backend | None = None, max_rounds: int = 4) -> dict:
+    bk = backend or Live()
+    s1 = bk.s1()
     sym = Symptoms(client=s1)(logs)  # 1 request
     if sym.down is False:
         return {"action": "NOOP", "why": "no outage in logs"}
     if sym.data_risk:
         return {"action": "ESCALATE", "why": "possible data risk — human first"}
 
-    s2 = s2 or CodexSystem2()
+    s2 = bk.s2()
     from jevx.py import pick
 
     for rnd in range(max_rounds):

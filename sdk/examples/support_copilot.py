@@ -8,9 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, ask
-from jevx.s2 import CodexSystem2, System2
 
 
 class Triage(Questions):
@@ -34,7 +33,9 @@ TEMPLATES = {
 HUMAN = "route:human"
 
 
-def handle(ticket: str, s1: Client | None = None, s2: System2 | None = None) -> dict:
+def handle(ticket: str, backend: Backend | None = None) -> dict:
+    bk = backend or Live()
+    s1, s2 = bk.s1(), bk.s2()
     t = Triage(client=s1)(ticket)  # 1 request
     p_urgent = t.answers["urgent"].prob
     if t.confidence("team") < 0.6 or 0.35 <= p_urgent <= 0.70:
@@ -42,7 +43,6 @@ def handle(ticket: str, s1: Client | None = None, s2: System2 | None = None) -> 
     if t.autoreply_ok:
         return {"action": "send-template", "text": TEMPLATES[t.team], "triage": t}
 
-    s2 = s2 or CodexSystem2()
     draft = s2.ask(f"Draft a short customer reply. Team: {t.team}. Ticket: {ticket}")
     v = Verify(client=s1)( {"ticket": ticket, "draft": draft} )  # 1 request
     if v.answers_q and v.leaks is False and v.overpromises is False:

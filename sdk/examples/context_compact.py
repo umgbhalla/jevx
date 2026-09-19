@@ -7,13 +7,14 @@ of what was dropped.
 
 from __future__ import annotations
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import feels
 
 
-def compact(exchanges: list[dict], goal: str, s1: Client | None = None,
+def compact(exchanges: list[dict], goal: str, backend: Backend | None = None,
             keep_at: float = 0.5) -> dict:
     """exchanges: [{role, content}]. Returns kept list + drop stats."""
+    s1 = (backend or Live()).s1()
     kept, dropped = [], []
     for i, ex in enumerate(exchanges):
         p = feels("is this exchange still needed for the goal?",

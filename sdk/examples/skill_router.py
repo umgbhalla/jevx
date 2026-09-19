@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, ask, feels, pick
 
 
@@ -19,9 +19,10 @@ class Gates(Questions):
     prose_ok: bool = ask("could a generalist satisfy this in prose with no tools?")
 
 
-def route(request: str, skills: list[dict], s1: Client | None = None,
+def route(request: str, skills: list[dict], backend: Backend | None = None,
           shortlist: int = 3, gate_at: float = 0.30, fits_at: float = 0.30) -> dict:
     """skills: [{name, description, full?}]. Returns {skill} or {skill: None}."""
+    s1 = (backend or Live()).s1()
     wide = pick("which skill, if any, should load for this request?",
                 {"request": request},
                 {s["name"]: s["description"] for s in skills}, client=s1)

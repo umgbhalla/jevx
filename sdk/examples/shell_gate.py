@@ -8,9 +8,9 @@ CRAP-style verdict. Refuse / review / run.
 
 from __future__ import annotations
 
+from jevx.backends import Backend, Live
 import shlex
 
-from jevx.client import Client
 from jevx.py import Questions, Score, ask
 from jevx.risk import blast_of, risk, verdict
 
@@ -36,9 +36,10 @@ class CmdCheck(Questions):
     leftovers: bool = ask("Is this a leftover, placeholder, or TODO rather than a real command?", threshold=0.7)
 
 
-def gate(cmd: str, s1: Client | None = None) -> dict:
+def gate(cmd: str, backend: Backend | None = None) -> dict:
     if is_routine(cmd):
         return {"verdict": "run", "why": "routine-local", "requests": 0}
+    s1 = (backend or Live()).s1()
     c = CmdCheck(client=s1)({"command": cmd})  # 1 request
     blast = blast_of(0.9 if c.secrets else 0.0, 0.7 if c.behavior else 0.1,
                      0.5 if float(c.risk_level) >= 1.5 else 0.1)

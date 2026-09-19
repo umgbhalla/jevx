@@ -8,10 +8,17 @@ drives S2 (Codex, organic). Examples run on scripted backends; live needs keys.
 - `sdk/` — uv project (`uv run pytest`, `uv lock`)
 - `sdk/jevx/` — client, idiomatic `py` layer, `relational`, `lint`, `prompts`,
   `s2` backends, `risk`
-- `sdk/examples/` — 18 flows: support_copilot, code_supervisor, incident_loop,
+- `sdk/jevx/` also: `fx` (Ask effects + Live/Script/Replay/Record/Condition/Trace
+  drivers + `run` interpreter), `backends` (Live/Sim bundles, `Uses` bases),
+  `contracts` (require/ensure), `programs` (Decider compile, repair loop,
+  cases dispatch, surrogate dual-impl, match-arm route compiler),
+  `sweep` (variant grids), `check` (flow fuzzer), `snapshots` (S2 checkpoints),
+  `ix` (indexed handoffs), `partial` (streaming snapshots)
+- `sdk/examples/` — 20 flows: support_copilot, code_supervisor, incident_loop,
   invoice_cascade, rag_guard, browser_loop, review_gate, conteval,
   floor_supervisor, skill_router, context_compact, model_router, graph_nav,
-  trader_loop, game_loop, test_select, shell_gate, robot_loop
+  trader_loop, game_loop, test_select, shell_gate, robot_loop,
+  dispatch (union routes), flow_class (Uses bases)
 - `.agents/skills/jev/SKILL.md` — condensed Jev usage for agents (start here)
 - `.agents/research/` — deep notes, one topic per file (see dir)
 

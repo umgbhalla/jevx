@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, Score, ask
 
 
@@ -87,7 +87,8 @@ class SimWorld:
             self.won = True
 
 
-def play(world: SimWorld, s1, max_ticks: int = 200) -> dict:
+def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
+    s1 = (backend or Live()).s1()
     trace = []
     for _ in range(max_ticks):
         snap = world.snapshot()

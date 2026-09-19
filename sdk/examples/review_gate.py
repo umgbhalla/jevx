@@ -10,9 +10,8 @@ from __future__ import annotations
 
 from typing import Literal
 
-from jevx.client import Client
 from jevx.py import Questions, Score, ask, feels
-from jevx.s2 import CodexSystem2, System2
+from jevx.backends import Backend, Live
 
 SCREEN_AT, LOCATE_AT, ROUTE_SEV, BLOCK_SEV = 0.70, 0.55, 1.5, 2.0
 MAX_FOLLOW_UPS, MAX_PROFILES, MAX_ROUNDS, HUNKS_PER_ROUND = 8, 5, 3, 8
@@ -46,10 +45,11 @@ def _pick(prompt: str, state: dict, options: dict, s1) -> tuple[str, float]:
     return c.choice, c.confidence
 
 
-def review(pr: dict, s1: Client | None = None, s2: System2 | None = None) -> dict:
+def review(pr: dict, backend: Backend | None = None) -> dict:
+    bk = backend or Live()
+    s1, s2 = bk.s1(), bk.s2()
     """pr: {files: [{path, patch, hunks: [ids], changed_tests: [...]}, ...]}."""
     from jevx.prompts import render
-    s2 = s2 or CodexSystem2()
     findings, followed, profiled = [], 0, 0
     for f in pr["files"]:
         if followed >= MAX_FOLLOW_UPS or profiled >= MAX_PROFILES:

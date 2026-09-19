@@ -8,10 +8,11 @@ Promote/kill computed over windows in code — the model never sees history.
 
 from __future__ import annotations
 
+from jevx.backends import Backend, Live
 import random
 from typing import Literal
 
-from jevx.client import Client
+from jevx.contracts import ensure
 from jevx.py import Questions, Score, ask
 
 
@@ -29,7 +30,8 @@ class Verdict(Questions):
     failmode: Literal["logic", "test_gap", "security", "perf", "none"] = ask("failure mode?")
 
 
-def judge_run(run: dict, s1: Client | None = None) -> dict:
+def judge_run(run: dict, backend: Backend | None = None) -> dict:
+    s1 = (backend or Live()).s1()
     j = Judge(client=s1)(run)  # 1 request
     v = Verdict(client=s1)(run)  # 1 request
     sev = float(j.severity)
@@ -51,6 +53,8 @@ def judge_run(run: dict, s1: Client | None = None) -> dict:
             "spec_met": j.answers["spec_met"].prob, "secure_ok": not j.secure}
 
 
+@ensure(lambda history, cost_per_run, budget, result: result["decision"] in ("promote", "hold", "kill"),
+         "decision is promote|hold|kill")
 def promote(history: list[dict], cost_per_run: float, budget: float) -> dict:
     """Nightly promotion bar over a window of judged runs. Pure code."""
     n = len(history)

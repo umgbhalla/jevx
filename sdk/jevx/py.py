@@ -47,16 +47,23 @@ __all__ = [
     "P",
     "Questions",
     "Refused",
+    "Result",
     "Score",
     "StaleReplay",
     "ask",
+    "cases",
+    "choose_from",
+    "compile",
     "feels",
     "gate",
     "pick",
     "rate",
     "record",
+    "repair",
     "replay",
     "route",
+    "routes_from",
+    "surrogate",
 ]
 
 
@@ -163,7 +170,13 @@ def _sha(state: Any, questions: dict) -> str:
 
 
 def _decide(state: Any, questions: dict, client: Client | None) -> dict[str, Any]:
+    from . import fx as _fx
+
     payload = {k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in questions.items()}
+    if client is None:
+        driver = _fx.current()
+        if driver is not None:
+            return driver.answer(state, payload)
     for hook in _Hooks:
         if r := hook("pre", state, payload):
             return r
@@ -258,10 +271,17 @@ class Questions:
         cls._fields_ = {
             k: v for k, v in cls.__dict__.items() if isinstance(v, _Field)
         }
-        hints = getattr(cls, "__annotations__", {})
-        for name, f in cls._fields_.items():
-            if name not in hints:
+        raw = getattr(cls, "__annotations__", {})
+        for name in cls._fields_:
+            if name not in raw:
                 raise TypeError(f"{cls.__name__}.{name} needs an annotation (bool/Literal/Score[...])")
+        import typing as _t
+
+        resolved = _hints(cls)
+        cls.Result = _t.NamedTuple(
+            f"{cls.__name__}Result",
+            [(n, _pytype(resolved[n])) for n in cls._fields_],
+        )
 
     def __init__(self, client: Client | None = None):
         self._client = client
@@ -289,6 +309,17 @@ class Questions:
                 raise TypeError(f"unsupported annotation for {name}: {ann!r}")
             meta[name] = a
         return Result(values, meta, self._fields_)
+
+
+def _pytype(ann: Any) -> type:
+    """Annotation -> runtime value type: bool | str | float."""
+    if ann is bool:
+        return bool
+    if get_origin(ann) is Literal:
+        return str
+    if isinstance(ann, _Levels):
+        return float
+    raise TypeError(f"unsupported annotation: {ann!r}")
 
 
 def _build(question: str, ann: Any) -> Any:
@@ -327,6 +358,18 @@ class Result:
 
     def __repr__(self) -> str:
         return f"Result({object.__getattribute__(self, '_values')!r})"
+
+    def as_tuple(self) -> tuple:
+        """Destructure values in field order: urgent, team, sev = t.as_tuple()."""
+        v = object.__getattribute__(self, "_values")
+        return tuple(v[k] for k in v)
+
+    def as_dict(self) -> dict:
+        return dict(object.__getattribute__(self, "_values"))
+
+    def as_named(self, nt_cls: type) -> Any:
+        """Pack into a NamedTuple class (e.g. Triage.Result): t.as_named(Triage.Result)."""
+        return nt_cls(**self.as_dict())
 
 
 # ---------------------------------------------------------------- control
@@ -387,45 +430,37 @@ def route(options: Mapping[str, str | None], *, instructions: str = "Which route
 @contextlib.contextmanager
 def record(path: str):
     """Log every decision (state, questions, answers) as JSONL. Probably-style."""
-    def hook(phase: str, state: Any, questions: dict, out: dict | None = None):
-        if phase == "post":
-            with open(path, "a") as fh:
-                fh.write(json.dumps({
-                    "sha": _sha(state, questions),
-                    "state": state,
-                    "questions": questions,
-                    "answers": {k: _freeze(v) for k, v in out.items()},
-                }, default=str) + "\n")
+    from . import fx as _fx
 
-    _Hooks.append(hook)
-    try:
+    with _fx.use(_fx.RecordDriver(path)):
         yield path
-    finally:
-        _Hooks.remove(hook)
 
 
 @contextlib.contextmanager
 def replay(path: str):
     """Re-run offline: serve logged answers in order, no network. Mismatch -> StaleReplay."""
-    rows = [json.loads(line) for line in open(path) if line.strip()]
-    idx = {"n": 0}
+    from . import fx as _fx
 
-    def hook(phase: str, state: Any, questions: dict, out: dict | None = None):
-        if phase != "pre":
-            return None
-        if idx["n"] >= len(rows):
-            raise StaleReplay("replay log exhausted")
-        row = rows[idx["n"]]
-        idx["n"] += 1
-        if row["sha"] != _sha(state, questions):
-            raise StaleReplay(f"question mismatch at step {idx['n']}")
-        return {k: parse_answer(k, v) for k, v in row["answers"].items()}
-
-    _Hooks.append(hook)
-    try:
+    with _fx.use(_fx.ReplayDriver(path)):
         yield path
-    finally:
-        _Hooks.remove(hook)
+
+
+def choose_from(state: Any, routes: dict[str, Any], *,
+                instructions: str = "Which route does this call for?",
+                client: Client | None = None) -> tuple[str, Any]:
+    """Union dispatch: one route question, then fill only the winner.
+
+    routes: name -> Questions subclass (filled in a second request with only
+    its questions) | callable(state) (run directly, no second request).
+    Returns (name, filled Result | callable return).
+    """
+    c = pick(instructions, state,
+             {n: getattr(r, "__doc__", None) or n for n, r in routes.items()},
+             client=client)
+    winner = routes[c.choice]
+    if isinstance(winner, type) and issubclass(winner, Questions):
+        return c.choice, winner(client=client)(state)
+    return c.choice, winner(state)
 
 
 def _freeze(answer: Any) -> dict:

@@ -13,9 +13,9 @@ import os
 import time
 from typing import Any, Callable
 
-from jevx.client import Client
 from jevx.py import Questions, ask
-from jevx.s2 import CodexSystem2, System2
+from jevx.contracts import ensure
+from jevx.backends import Backend, Live
 
 # thresholds (FactoryPolicy order matters: human -> stuck/off-track -> finish -> verify)
 T_HUMAN, T_STUCK, T_OFF, T_FINISH, T_REQ, T_TESTS, T_IMPL, T_VERIFY = \
@@ -60,6 +60,9 @@ def _p(ans) -> float:
     return float(ans.prob)
 
 
+@ensure(lambda a, steers_used, retries_used, verified, result: result in (
+    "ESCALATE", "STEER", "RETRY", "FINISH", "START_VERIFIER", "CONTINUE"),
+    "action is a known FactoryAction")
 def decide(a: dict, steers_used: int, retries_used: int, verified: bool) -> str:
     if a["needs_human"] >= T_HUMAN:
         return "ESCALATE"
@@ -75,8 +78,8 @@ def decide(a: dict, steers_used: int, retries_used: int, verified: bool) -> str:
     return "CONTINUE"
 
 
-def supervise(task: str, worker: Worker, s1: Client | None = None,
-              s2: System2 | None = None, runs_dir: str | None = None,
+def supervise(task: str, worker: Worker, backend: Backend | None = None,
+              runs_dir: str | None = None,
               repo: str = ".") -> dict:
     from jevx.prompts import render
     os.makedirs(runs_dir, exist_ok=True) if runs_dir else None
@@ -95,6 +98,8 @@ def supervise(task: str, worker: Worker, s1: Client | None = None,
     last_assess = 0.0
     dirty = force = False
     it = 0
+    bk = backend or Live()
+    s1 = bk.s1()
     log({"kind": "START", "task": task})
 
     while it < MAX_ITERS:
@@ -142,7 +147,8 @@ def supervise(task: str, worker: Worker, s1: Client | None = None,
             logfh.close() if logfh else None
             return {"action": "ESCALATE", "probs": a}
         if act == "START_VERIFIER":
-            s2 = s2 or CodexSystem2()
+            bk = backend or Live()
+            s2 = bk.s2()
             out = s2.ask(render("verify", job=task))
             events.append(f"VERIFICATION_COMPLETED: {out[:2000]}")
             verified = True

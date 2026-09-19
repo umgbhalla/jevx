@@ -7,11 +7,11 @@ per-event latencies. SimMarket stands in for the chain; decisions are real S1.
 
 from __future__ import annotations
 
+from jevx.backends import Backend, Live
 import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-from jevx.client import Client
 from jevx.py import Questions, ask
 
 
@@ -66,8 +66,9 @@ def allowed(m: SimMarket, side: str, qty: float, max_pos: float, dry: bool) -> t
     return True, "live"
 
 
-def run(market: SimMarket, s1, ticks: int = 20, qty: float = 10.0,
+def run(market: SimMarket, backend=None, ticks: int = 20, qty: float = 10.0,
         max_pos: float = 100.0, dry: bool = True, horizon: str = "~100 blocks") -> dict:
+    s1 = (backend or Live()).s1()
     decisions, late, held, t0 = [], 0, 0, time.perf_counter()
     busy = False
     for _ in range(ticks):

@@ -9,9 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, Score, ask, feels
-from jevx.s2 import CodexSystem2, System2
 
 
 class Scope(Questions):
@@ -30,9 +29,10 @@ class DiffCheck(Questions):
     severity: Score["cosmetic", "notable", "blocking"] = ask("how severe are remaining issues?")
 
 
-def supervise(task: str, s1: Client | None = None, s2: System2 | None = None,
+def supervise(task: str, backend: Backend | None = None,
               max_fixes: int = 3) -> dict:
-    s2 = s2 or CodexSystem2()
+    bk = backend or Live()
+    s1, s2 = bk.s1(), bk.s2()
     sc = Scope(client=s1)(task)  # 1 request
     if sc.complexity <= 0.5:
         out = s2.ask(f"Do it, then run tests. Task: {task}")

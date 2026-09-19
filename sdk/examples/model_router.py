@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from jevx.client import Client
+from jevx.backends import Backend, Live
 from jevx.py import Questions, Score, ask
 
 TIERS = ("fast", "balanced", "deep")
@@ -21,8 +21,9 @@ class RouteQ(Questions):
     risky: bool = ask("is this risky, irreversible, or security-sensitive?", threshold=0.70)
 
 
-def choose(state: str, current: str = "balanced", s1: Client | None = None,
+def choose(state: str, current: str = "balanced", backend: Backend | None = None,
            up_at: float = 0.3, down_at: float = 0.6) -> dict:
+    s1 = (backend or Live()).s1()
     try:
         r = RouteQ(client=s1)(state)  # 1 request
     except Exception:
