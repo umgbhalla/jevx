@@ -1,13 +1,21 @@
 [build-system]
-requires = ["setuptools>=61"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "jevx"
 version = "0.1.0"
-description = "Minimal Python SDK for Jev (TypeSafe System One decisions). Stdlib-only."
+description = "Minimal Python SDK for Jev (TypeSafe System One decisions). Stdlib-only core."
 requires-python = ">=3.10"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["jevx*"]
+[project.optional-dependencies]
+codex = ["openai-codex"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["jevx"]
+
+[tool.uv]
+package = true

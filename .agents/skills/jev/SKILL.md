@@ -41,6 +41,15 @@ question about one state into a single call.
 
 ## Snippets
 
+Raw HTTP (no SDK):
+```bash
+curl https://api.typesafe.ai/v1/systemone \
+  -H "Authorization: Bearer $TYPESAFE_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"jev-latest","state":"deploy failed twice, 500s",
+       "questions":{"urgent":{"type":"noul","instructions":"needs attention now?"}}}'
+```
+
 Python (`pip install typesafe-sdk`):
 ```python
 from typesafe_sdk import Noul, TypeSafeClient

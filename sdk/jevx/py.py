@@ -30,6 +30,8 @@ import functools
 import hashlib
 import inspect
 import json
+import sys as _sys
+import typing as _typing
 from typing import Annotated, Any, Literal, Mapping, get_args, get_origin
 
 from .answers import ChoiceAnswer as Choice
@@ -219,6 +221,19 @@ def ask(question: str, *, threshold: float = 0.5) -> "_Field":
     return _Field(question, threshold)
 
 
+def _hints(cls: type) -> dict[str, Any]:
+    """Resolved annotations (class bodies are strings under `from __future__`)."""
+    ns = dict(vars(_sys.modules[__name__]))  # SDK names first (base-class annotations)
+    ns.update(vars(_sys.modules[cls.__module__]))
+    ns.setdefault("Literal", Literal)
+    ns.setdefault("Score", Score)
+    ns.setdefault("bool", bool)
+    out = _typing.get_type_hints(cls, globalns=ns)
+    out.pop("_fields_", None)
+    out.pop("_client", None)
+    return out
+
+
 class _Field:
     def __init__(self, question: str, threshold: float):
         self.question = question
@@ -252,7 +267,7 @@ class Questions:
         self._client = client
 
     def __call__(self, state: Any) -> "Result":
-        hints = self.__class__.__annotations__
+        hints = _hints(self.__class__)
         qs: dict[str, Any] = {}
         for name, f in self._fields_.items():
             ann = hints[name]

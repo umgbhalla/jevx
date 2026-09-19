@@ -11,6 +11,10 @@ community experiments, and agent-loop patterns. Read-only research — no app co
   - `py.py` — `feels`/`pick`/`rate`, `P`/`Score`, matchable `Choice`,
     declarative `Questions`, `@gate`/`@route`, `record`/`replay`
   - `questions.py`, `answers.py`, `errors.py` — builders, typed answers, errors
+  - `s2.py`, `risk.py` — System 2 backends (Codex/Fake), CRAP-style risk()
+- `sdk/examples/` — S1-drives-S2 flows (scripted backends; needs keys for live):
+  support_copilot, code_supervisor, incident_loop, invoice_cascade,
+  rag_guard, browser_loop (FakeBrowser), review_gate, conteval
 - `.agents/skills/jev/SKILL.md` — condensed Jev usage for agents (start here)
 - `.agents/research/` — deep notes, one topic per file:
   - `api-spec.md` — endpoint, Noul/Choice/Score schemas, errors, limits
