@@ -7,21 +7,42 @@ and skips the bars. Errors leave the current tier untouched (fail-closed).
 
 from __future__ import annotations
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
-from jevx.py import case
-from jevx.py import choice
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
+
+x = j.x
 
 TIERS = ("fast", "balanced", "deep")
 
 
-ROUTE = vector(
-    tier=choice("which tier fits this work?", TIERS),
-    effort=score("effort required?", ("low", "medium", "high", "xhigh")),
-    risky=noul("is this risky, irreversible, or security-sensitive?"),
+ROUTE = j.vector(
+    tier=j.choice("Which tier fits this work?", TIERS),
+    effort=j.score("Effort required?", ("low", "medium", "high", "xhigh")),
+    risky=j.noul("Is this risky, irreversible, or security-sensitive?"),
+)
+
+
+def _delta(current: str, wanted: str) -> int:
+    return TIERS.index(wanted) - TIERS.index(current)
+
+
+POLICY = (
+    j.input(state=x, current="balanced", up_at=0.3, down_at=0.6)
+    | j.keep(route=ROUTE.on(x.state))
+    | j.keep(delta=j.compute(_delta, x.current, x.route.tier.choice))
+    | j.case[
+        x.route.risky > 0.7:
+            j.stop("ROUTE", tier="deep", effort=j.max(x.route.effort, 2.0), why="risky"),
+        (x.delta > 0) & (x.route.tier.confidence >= x.up_at):
+            j.stop("ROUTE", tier=x.route.tier.choice, effort=x.route.effort, why="upgrade"),
+        (x.delta < 0) & (x.route.tier.confidence >= x.down_at):
+            j.stop("ROUTE", tier=x.route.tier.choice, effort=x.route.effort, why="downgrade"),
+        x.delta == 0:
+            j.stop("ROUTE", tier=x.current, effort=x.route.effort, why="stay"),
+        ...:
+            j.stop("ROUTE", tier=x.current, effort=x.route.effort, why="bars not met"),
+    ]
 )
 
 
@@ -32,23 +53,14 @@ def choose(
     up_at: float = 0.3,
     down_at: float = 0.6,
 ) -> dict:
-    s1 = (backend or Live()).s1()
     try:
-        r = ROUTE.ask(state, client=s1)  # 1 request: choice + score + Noul
+        result = POLICY.run(
+            state=state,
+            current=current,
+            up_at=up_at,
+            down_at=down_at,
+            backend=backend or Live(),
+        )
     except Exception:
         return {"tier": current, "why": "S1 error, fail closed"}
-    risky_p = float(r.risky)
-    want, conf = r.tier.choice, r.tier.confidence
-    ci, wi = TIERS.index(current), TIERS.index(want)
-    delta = wi - ci
-    return case[
-        risky_p > 0.7 : {"tier": "deep", "effort": max(float(r.effort), 2.0), "why": "risky"},
-        delta > 0 and conf >= up_at : {"tier": want, "effort": float(r.effort), "why": "upgrade"},
-        delta < 0 and conf >= down_at : {
-            "tier": want,
-            "effort": float(r.effort),
-            "why": "downgrade",
-        },
-        delta == 0 : {"tier": current, "effort": float(r.effort), "why": "stay"},
-        ... : {"tier": current, "effort": float(r.effort), "why": "bars not met"},
-    ].ask({})
+    return {key: value for key, value in result.items() if key != "action"}

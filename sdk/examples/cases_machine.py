@@ -8,27 +8,39 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
+import jevx as j
 from jevx.fx import ScriptDriver
 from jevx.fx import TraceDriver
 from jevx.fx import use
-from jevx.py import case
-from jevx.py import noul
+
+x = j.x
+
+
+MACHINE = (
+    j.input(state=x)
+    | j.case[
+        x.state.attempt >= x.state.max_attempts:
+            j.stop("ESCALATE", phase="ESCALATE", reason="attempt limit"),
+        ...: j.pass_,
+    ]
+    | j.keep(
+        safety=j.noul("Is the verified result safe to finish?")
+        * ~j.noul("Does the result expose a remaining risk?")
+    )
+    | j.case[
+        x.safety >= 0.75:
+            j.stop("DONE", phase="DONE", reason="verified safe"),
+        x.safety < 0.35:
+            j.stop("RETRY", phase="RETRY", attempt=x.state.attempt + 1),
+        ...: j.stop("REVIEW", phase="REVIEW", reason="uncertain safety"),
+    ]
+)
 
 
 def advance(state: dict[str, Any]) -> dict[str, Any]:
-    """Batch the guard expression, then select the first matching transition."""
-    if state["attempt"] >= state["max_attempts"]:
-        return {**state, "phase": "ESCALATE", "reason": "attempt limit"}
-
-    safety = noul("is the verified result safe to finish?") * ~noul(
-        "does the result expose a remaining risk?"
-    )
-    transition = case[
-        safety >= 0.75 : {"phase": "DONE", "reason": "verified safe"},
-        safety < 0.35 : {"phase": "RETRY", "attempt": state["attempt"] + 1},
-        ... : {"phase": "REVIEW", "reason": "uncertain safety"},
-    ].ask(state)
-    return {**state, **transition}
+    """Execute one declared machine transition."""
+    result = MACHINE.run(state=state)
+    return {**state, **{key: value for key, value in result.items() if key != "action"}}
 
 
 def demo() -> list[dict[str, Any]]:

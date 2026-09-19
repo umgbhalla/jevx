@@ -12,7 +12,6 @@ from typing import Any
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import case
 from jevx.relational import Table
 
 
@@ -33,15 +32,12 @@ def compact(
         true={"what": "The exchange contains information needed for a correct next action."},
         false={"what": "The exchange is stale or irrelevant to the current goal."},
     )
-    buckets = [
-        case[p >= keep_at: "keep", ...: "drop"].ask({})
-        for p in scores
-    ]
-    kept = [row["exchange"] for row, bucket in zip(rows, buckets, strict=True) if bucket == "keep"]
+    kept_mask = [p >= keep_at for p in scores]
+    kept = [row["exchange"] for row, keep in zip(rows, kept_mask, strict=True) if keep]
     dropped = [
         {"index": row["index"], "prob": float(p), "preview": row["exchange"]["content"][:120]}
-        for row, p, bucket in zip(rows, scores, buckets, strict=True)
-        if bucket == "drop"
+        for row, p, keep in zip(rows, scores, kept_mask, strict=True)
+        if not keep
     ]
     return {
         "kept": kept,

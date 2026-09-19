@@ -11,15 +11,15 @@ from __future__ import annotations
 import re
 import shlex
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
 from jevx.risk import blast_of
 from jevx.risk import risk
 from jevx.risk import verdict
+
+x = j.x
 
 ROUTINE = {
     "ls",
@@ -59,8 +59,8 @@ def is_routine(cmd: str) -> bool:
     )
 
 
-CHECK = vector(
-    risk_level=score(
+CHECK = j.vector(
+    risk_level=j.score(
         "How risky is this command to run without extra review? Judge blast radius and reversibility, not size.",
         (
             "cosmetic or isolated: formatting, comments, docs, tests only",
@@ -68,9 +68,49 @@ CHECK = vector(
             "high: auth, payments, migration, concurrency, secrets, deletion, shared interface",
         ),
     ),
-    secrets=noul("Does this expose a credential, token, key, password, or connection string?"),
-    behavior=noul("Does this change runtime state, as opposed to only reading?"),
-    leftovers=noul("Is this a leftover, placeholder, or TODO rather than a real command?"),
+    secrets=j.noul("Does this expose a credential, token, key, password, or connection string?"),
+    behavior=j.noul("Does this change runtime state, as opposed to only reading?"),
+    leftovers=j.noul("Is this a leftover, placeholder, or TODO rather than a real command?"),
+)
+
+
+def _assessment(risk_level, secrets, behavior, leftovers):
+    has_secrets = secrets >= 0.5
+    changes_state = behavior >= 0.5
+    has_leftovers = leftovers >= 0.7
+    blast = blast_of(
+        0.9 if has_secrets else 0.0,
+        0.7 if changes_state else 0.1,
+        0.5 if float(risk_level) >= 1.5 else 0.1,
+    )
+    confidence = 1.0 - (float(risk_level) / 2.0) * 0.5 - (0.3 if has_secrets else 0.0)
+    status = verdict(risk(blast, max(0.0, min(1.0, confidence))), review_at=1.5, refuse_at=4.0)
+    return {
+        "secrets": 1.0 if has_secrets else 0.0,
+        "leftovers": 1.0 if has_leftovers else 0.0,
+        "status": status,
+    }
+
+
+POLICY = (
+    j.input(command=x)
+    | j.keep(check=CHECK.on(x.command))
+    | j.keep(
+        assessment=j.compute(
+            _assessment,
+            x.check.risk_level,
+            x.check.secrets,
+            x.check.behavior,
+            x.check.leftovers,
+        )
+    )
+    | j.case[
+        (x.assessment.secrets >= 1.0) | (x.assessment.status == "refuse"):
+            j.stop("refuse", verdict="refuse", risk=x.assessment.status),
+        (x.assessment.status == "review") | (x.assessment.leftovers >= 1.0):
+            j.stop("review", verdict="review", risk=x.assessment.status),
+        ...: j.stop("run", verdict="run", risk=x.assessment.status),
+    ]
 )
 
 
@@ -83,20 +123,5 @@ CHECK = vector(
 def gate(cmd: str, backend: Backend | None = None) -> dict:
     if is_routine(cmd):
         return {"verdict": "run", "why": "routine-local", "requests": 0}
-    s1 = (backend or Live()).s1()
-    c = CHECK.ask({"command": cmd}, client=s1)  # 1 request: score + three Nouls
-    has_secrets = c.secrets >= 0.5
-    changes_state = c.behavior >= 0.5
-    has_leftovers = c.leftovers >= 0.7
-    blast = blast_of(
-        0.9 if has_secrets else 0.0,
-        0.7 if changes_state else 0.1,
-        0.5 if float(c.risk_level) >= 1.5 else 0.1,
-    )
-    conf = 1.0 - (float(c.risk_level) / 2.0) * 0.5 - (0.3 if has_secrets else 0.0)
-    v = verdict(risk(blast, max(0.0, min(1.0, conf))), review_at=1.5, refuse_at=4.0)
-    if has_secrets or v == "refuse":
-        return {"verdict": "refuse", "risk": v}
-    if v == "review" or has_leftovers:
-        return {"verdict": "review", "risk": v}
-    return {"verdict": "run", "risk": v}
+    result = POLICY.run(command=cmd, backend=backend or Live())
+    return {key: value for key, value in result.items() if key != "action"}

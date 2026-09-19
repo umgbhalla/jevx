@@ -9,23 +9,16 @@ Never mutates caller state; problems thread through every return.
 from __future__ import annotations
 
 import difflib
-import json
-import re
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
-from jevx.contracts import ensure
-from jevx.py import case
-from jevx.py import choice
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
 from jevx.risk import blast_of
 from jevx.risk import risk
 from jevx.risk import verdict
 
-TRIAGE = vector(
-    doc_type=choice(
+TRIAGE = j.vector(
+    doc_type=j.choice(
         {
             "question": "What kind of document is this?",
             "focus": "Classify the source document, not the requested action.",
@@ -37,7 +30,7 @@ TRIAGE = vector(
             "reminder": {"what": "A notice about an existing payment obligation."},
         },
     ),
-    fraud=noul(
+    fraud=j.noul(
         {
             "question": "Does the source document show fraud patterns?",
             "inspect": ["sender", "amount", "account details"],
@@ -45,7 +38,7 @@ TRIAGE = vector(
         true={"what": "Evidence of impersonation, alteration, or deceptive payment changes."},
         false={"what": "No concrete fraud indicator in the supplied document."},
     ),
-    already_paid=noul(
+    already_paid=j.noul(
         {
             "question": "Was this invoice already paid?",
             "compare": ["invoice number", "vendor", "amount"],
@@ -53,7 +46,7 @@ TRIAGE = vector(
         true={"what": "The ledger contains a payment for this same obligation."},
         false={"what": "No matching payment is present in the ledger."},
     ),
-    wrong_vendor=noul(
+    wrong_vendor=j.noul(
         {
             "question": "Does the invoice name the wrong vendor or entity?",
             "compare": ["invoice", "purchase order"],
@@ -61,7 +54,7 @@ TRIAGE = vector(
         true={"what": "The named legal entity does not match the approved vendor."},
         false={"what": "The vendor and purchasing entity match."},
     ),
-    po_status=choice(
+    po_status=j.choice(
         {"question": "How does the purchase order cover this invoice?"},
         {
             "priced": {"what": "The invoiced line and amount are covered."},
@@ -70,7 +63,7 @@ TRIAGE = vector(
             "not_ours": {"what": "The order belongs to another entity or buyer."},
         },
     ),
-    urgency=score(
+    urgency=j.score(
         {
             "question": "How urgent is payment pressure?",
             "focus": "Judge documented terms, not threatening wording alone.",
@@ -84,8 +77,8 @@ TRIAGE = vector(
 )
 
 
-FIELD_CHECK = vector(
-    hallucinated=noul(
+FIELD_CHECK = j.vector(
+    hallucinated=j.noul(
         {
             "question": "Is an extracted value absent from the source document?",
             "compare": ["extracted", "doc"],
@@ -93,7 +86,7 @@ FIELD_CHECK = vector(
         true={"what": "The value is invented or unsupported by the document."},
         false={"what": "The source document contains the extracted value."},
     ),
-    off_target=noul(
+    off_target=j.noul(
         {
             "question": "Was a different field extracted?",
             "compare": ["field name", "extracted value", "doc"],
@@ -101,7 +94,7 @@ FIELD_CHECK = vector(
         true={"what": "The value belongs to a different field or entity."},
         false={"what": "The value belongs to the requested field."},
     ),
-    unreasonable=noul(
+    unreasonable=j.noul(
         {
             "question": "Is the extracted value unreasonable?",
             "inspect": ["currency", "totals", "dates"],
@@ -109,7 +102,7 @@ FIELD_CHECK = vector(
         true={"what": "The value conflicts with arithmetic or the document context."},
         false={"what": "The value is plausible and internally consistent."},
     ),
-    absence_wrong=noul(
+    absence_wrong=j.noul(
         {
             "question": "Was a supposedly missing value actually present?",
             "compare": ["extracted", "doc"],
@@ -119,8 +112,8 @@ FIELD_CHECK = vector(
     ),
 )
 
-RELEASE = vector(
-    withholds=noul(
+RELEASE = j.vector(
+    withholds=j.noul(
         {
             "question": "Should the approver withhold payment?",
             "consider": ["duplicate", "vendor mismatch", "unsupported amount"],
@@ -128,7 +121,7 @@ RELEASE = vector(
         true={"what": "A blocking approval condition applies."},
         false={"what": "No blocking approval condition applies."},
     ),
-    over_cap=noul(
+    over_cap=j.noul(
         {
             "question": "Is the invoice above the approved cap or purchase order?",
             "compare": ["invoice total", "approved amount"],
@@ -142,129 +135,139 @@ RELEASE = vector(
 REQUIRED = ("inv_no", "date", "currency", "total", "tax", "subtotal")
 
 
-def _fuzzy_key(d: dict) -> str:
-    return f"{d.get('vendor', '')} {d.get('total', '')} {d.get('date', '')}"
+def _fuzzy_key(row: dict) -> str:
+    return f"{row.get('vendor', '')} {row.get('total', '')} {row.get('date', '')}"
+
+
+def _duplicate(doc: dict, ledger: list[dict], invoice: dict | None = None) -> bool:
+    if invoice and any(invoice.get("inv_no") == row.get("inv_no") for row in ledger):
+        return True
+    candidate = invoice or doc
+    return any(_fuzzy_dupe(candidate, row) > 0.9 for row in ledger)
 
 
 def _fuzzy_dupe(a: dict, b: dict) -> float:
     return difflib.SequenceMatcher(None, _fuzzy_key(a), _fuzzy_key(b)).ratio()
 
 
-def _parse_extraction(text: str) -> dict | None:
-    """Strip fences, slice largest brace block, require keys."""
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
-    try:
-        start, end = t.index("{"), t.rindex("}")
-    except ValueError:
-        return None
-    try:
-        inv = json.loads(t[start : end + 1])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(inv, dict) or any(k not in inv for k in REQUIRED):
-        return None
-    return inv
-
-
-@ensure(
-    lambda *a, result=None, **k: (
-        result is not None
-        and result["action"]
-        in (
-            "FRAUD_REVIEW",
-            "HOLD",
-            "DUPLICATE_REVIEW",
-            "REJECT",
-            "HOLD_FOR_DOCS",
-            "REQUEST_CORRECTED",
-            "APPROVAL",
-            "SHORT_PAY",
-            "PROCUREMENT_REVIEW",
-            "RELEASED",
-        )
-    ),
-    msg="known AP action",
-)
-def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = None) -> dict:
-    """doc: {text, vendor, currency, ...}; ledger: prior invoices; fx: {ccy: rate}.
-
-    fx rates must be > 0; missing currency is a problem, never a silent 1.0.
-    """
-    bk = backend or Live()
-    s1, s2 = bk.s1(), bk.s2()
-    text = doc.get("text", "")
-    problems: list[str] = []
-    t = TRIAGE.ask({**doc, "text": text[:2000]}, client=s1)  # 1 request
-    if t.fraud >= 0.70:
-        return {"action": "FRAUD_REVIEW", "problems": problems}
-    if t.doc_type.choice != "invoice":
-        return {
-            "action": "HOLD",
-            "why": f"not an invoice: {t.doc_type.choice}",
-            "problems": problems,
-        }
-    inv_nos = {p.get("inv_no") for p in ledger}
-    if t.already_paid >= 0.70 or any(_fuzzy_dupe(doc, p) > 0.9 for p in ledger):
-        return {"action": "DUPLICATE_REVIEW", "problems": problems}
-    if t.wrong_vendor >= 0.65:
-        return {"action": "REJECT", "problems": problems}
-
-    raw = s2.ask(
-        "Extract JSON only, verbatim values, no math: "
-        "{inv_no,date,due,currency,total,tax,subtotal,lines[{desc,qty,unit,po_line}],bank}. "
-        f"Doc: {text[:4000]}"
-    )
-    inv = _parse_extraction(raw)
-    if inv is None:
-        return {"action": "HOLD_FOR_DOCS", "why": "unparseable extraction", "problems": problems}
-    if inv.get("inv_no") in inv_nos:
-        return {"action": "DUPLICATE_REVIEW", "why": "exact inv_no match", "problems": problems}
-
-    total = inv.get("total", 0)
-    if abs(total - (inv.get("subtotal", 0) + inv.get("tax", 0))) > 0.01:
+def _validate_numbers(invoice: dict, doc: dict, fx: dict, po: str) -> dict:
+    problems = []
+    total = invoice["total"]
+    if abs(total - invoice["subtotal"] - invoice["tax"]) > 0.01:
         problems.append("sums_dont_add")
-    ccy = inv.get("currency", "")
-    rate = fx.get(ccy)
+    currency = invoice["currency"]
+    rate = fx.get(currency)
     if rate is None or rate <= 0:
-        problems.append(f"missing_fx:{ccy}")
+        problems.append(f"missing_fx:{currency}")
         rate = 1.0
-    po = t.po_status.choice
-    if po in ("priced", "component") and doc.get("po_total") is not None:
-        tol = max(50.0, 0.02 * total)
-        if abs(total - float(doc["po_total"])) > tol:
+    po_total = doc.get("po_total")
+    if po in ("priced", "component") and po_total is not None:
+        if abs(total - float(po_total)) > max(50.0, 0.02 * total):
             problems.append("po_variance")
-    fc = FIELD_CHECK.ask({"doc": text[:2000], "extracted": inv}, client=s1)  # 1 request
-    if any(
-        value >= 0.70
-        for value in (fc.hallucinated, fc.off_target, fc.unreasonable, fc.absence_wrong)
-    ):
-        fix = s2.ask(
-            f"Verifier flags on {inv}: propose short_pay_lines, dispute_reason, "
-            f"corrected_request with citations. PO status: {po}."
-        )
-        return {"action": "REQUEST_CORRECTED", "proposal": fix, "problems": problems}
+    return {"problems": problems, "rate": rate}
 
-    home_total = total * rate
-    blast = blast_of(min(home_total / 10000, 1.0), 0.7 if po in ("extra", "not_ours") else 0.1)
-    r = RELEASE.ask({"invoice": inv, "po_status": po}, client=s1)  # 1 request
-    conf = 1.0 - max(float(r.over_cap), float(r.withholds))
-    v = verdict(risk(blast, conf), review_at=1.5, refuse_at=4.0)
-    out = list(ledger) + [inv]
-    return case[
-        r.withholds >= 0.60 or v == "refuse" : {
-            "action": "HOLD",
-            "why": "withheld or risk-refused",
-            "risk": v,
-            "problems": problems,
-        },
-        v == "review" or r.over_cap >= 0.65 : {
-            "action": "SHORT_PAY" if po != "not_ours" else "PROCUREMENT_REVIEW",
-            "problems": problems,
-        },
-        ... : {
-            "action": "RELEASED",
-            "inv_no": inv.get("inv_no"),
-            "ledger": out,
-            "problems": problems,
-        },
-    ].ask({})
+
+def _append_ledger(ledger: list[dict], invoice: dict) -> list[dict]:
+    return [*ledger, invoice]
+
+
+def _po_blast(po: str) -> float:
+    return 0.7 if po in ("extra", "not_ours") else 0.1
+
+
+@j.s2
+def extract(text: str) -> dict:
+    """Extract invoice fields verbatim. Return JSON with inv_no, date, due, currency,
+    total, tax, subtotal, lines, and bank. Do not calculate missing values.
+    """
+
+
+@j.s2
+def repair(invoice: dict, po_status: str, flags: object) -> str:
+    """Propose short-pay lines, a dispute reason, and a corrected request with citations."""
+
+
+AP = (
+    j.input(doc=j.x, ledger=[], fx={})
+    | j.keep(text=j.x.doc.text[:4000], problems=[])
+    | j.keep(
+        triage=TRIAGE.on(
+            {"document": j.x.doc, "source_text": j.x.text[:2000], "ledger": j.x.ledger}
+        )
+    )
+    | j.case[
+        j.x.triage.fraud >= 0.70: j.stop("FRAUD_REVIEW", problems=j.x.problems),
+        j.x.triage.doc_type.choice != "invoice": j.stop("HOLD", problems=j.x.problems),
+        j.x.triage.already_paid >= 0.70: j.stop("DUPLICATE_REVIEW", problems=j.x.problems),
+        j.x.triage.wrong_vendor >= 0.65: j.stop("REJECT", problems=j.x.problems),
+        ...: j.pass_,
+    ]
+    | j.keep(invoice=extract(j.x.text))
+    | j.require(j.x.invoice, *REQUIRED, else_=j.stop("HOLD_FOR_DOCS", problems=j.x.problems))
+    | j.when(
+        j.compute(_duplicate, j.x.doc, j.x.ledger, j.x.invoice),
+        j.stop("DUPLICATE_REVIEW", problems=j.x.problems),
+    )
+    | j.keep(
+        fields=FIELD_CHECK.on({"source_text": j.x.text[:2000], "extracted": j.x.invoice})
+    )
+    | j.when(
+        j.max(
+            j.x.fields.hallucinated,
+            j.x.fields.off_target,
+            j.x.fields.unreasonable,
+            j.x.fields.absence_wrong,
+        )
+        >= 0.70,
+        j.stop(
+            "REQUEST_CORRECTED",
+            proposal=repair(j.x.invoice, j.x.triage.po_status.choice, j.x.fields),
+            problems=j.x.problems,
+        ),
+    )
+    | j.keep(
+        validation=j.compute(
+            _validate_numbers,
+            j.x.invoice,
+            j.x.doc,
+            j.x.fx,
+            j.x.triage.po_status.choice,
+        )
+    )
+    | j.keep(
+        release=RELEASE.on(
+            {"invoice": j.x.invoice, "po_status": j.x.triage.po_status.choice}
+        ),
+        blast=j.compute(
+            blast_of,
+            j.min(j.x.invoice.total * j.x.validation.rate / 10_000, 1.0),
+            j.compute(_po_blast, j.x.triage.po_status.choice),
+        ),
+    )
+    | j.keep(
+        confidence=1 - j.max(j.x.release.over_cap, j.x.release.withholds),
+        ledger_after=j.compute(_append_ledger, j.x.ledger, j.x.invoice),
+    )
+    | j.keep(risk=j.compute(risk, j.x.blast, j.x.confidence))
+    | j.keep(verdict=j.compute(verdict, j.x.risk, review_at=1.5, refuse_at=4.0))
+    | j.case[
+        (j.x.release.withholds >= 0.60) | (j.x.verdict == "refuse"):
+            j.stop("HOLD", risk=j.x.verdict, problems=j.x.validation.problems),
+        ((j.x.verdict == "review") | (j.x.release.over_cap >= 0.65))
+        & (j.x.triage.po_status.choice == "not_ours"):
+            j.stop("PROCUREMENT_REVIEW", problems=j.x.validation.problems),
+        (j.x.verdict == "review") | (j.x.release.over_cap >= 0.65):
+            j.stop("SHORT_PAY", problems=j.x.validation.problems),
+        ...: j.stop(
+            "RELEASED",
+            inv_no=j.x.invoice.inv_no,
+            ledger=j.x.ledger_after,
+            problems=j.x.validation.problems,
+        ),
+    ]
+)
+
+
+def process(doc: dict, ledger: list[dict], fx: dict, backend: Backend | None = None) -> dict:
+    """Run the inert AP graph with a live or scripted backend."""
+    return AP.run(doc=doc, ledger=ledger, fx=fx, backend=backend or Live())

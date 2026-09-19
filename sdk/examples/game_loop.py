@@ -12,14 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+import jevx as j
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import case
-from jevx.py import choice
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
+
+x = j.x
 
 ACTIONS = {
     "noop": "Release controls, keep momentum.",
@@ -33,10 +31,10 @@ ACTIONS = {
 JUMP_HOLD = {"right_jump": "right", "right_run_jump": "right_run", "jump": "noop"}
 
 
-TICK = vector(
-    action=choice("Which controller macro should commit next?", ACTIONS),
-    jump_needed=noul("Should a forward jump begin or remain held now?"),
-    danger=score("How dangerous is the immediate situation?", ("safe", "caution", "threat")),
+TICK = j.vector(
+    action=j.choice("Which controller macro should commit next?", ACTIONS),
+    jump_needed=j.noul("Should a forward jump begin or remain held now?"),
+    danger=j.score("How dangerous is the immediate situation?", ("safe", "caution", "threat")),
 )
 
 
@@ -118,6 +116,23 @@ JUMP_MAP = {
 }
 
 
+def _jump_action(action: str) -> str:
+    return JUMP_MAP.get(action, "jump")
+
+
+ACTION = (
+    j.input(snap=x, air=x)
+    | j.keep(tick=TICK.on(x.snap))
+    | j.case[
+        (x.air > 0) & x.tick.action.choice.isin(*JUMP_HOLD):
+            j.stop("selected", action=x.tick.action.choice, tick=x.tick),
+        x.tick.jump_needed >= 0.5:
+            j.stop("selected", action=j.compute(_jump_action, x.tick.action.choice), tick=x.tick),
+        ...: j.stop("selected", action=x.tick.action.choice, tick=x.tick),
+    ]
+)
+
+
 @ensure(
     lambda *a, result=None, **k: (
         result is not None and result["result"] in ("won", "died", "timeout")
@@ -128,17 +143,13 @@ JUMP_MAP = {
     lambda world, backend=None, max_ticks=200, **k: 1 <= max_ticks <= 1000, msg="ticks in range"
 )
 def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
-    s1 = (backend or Live()).s1()
     trace = []
+    bk = backend or Live()
     for _ in range(max_ticks):
         snap = world.snapshot()
-        t = TICK.ask(snap, client=s1)  # 1 request: Choice + Noul + Score
-        a = t.action.choice
-        a = case[
-            world.air > 0 and a in JUMP_HOLD : a,
-            t.jump_needed >= 0.5 : JUMP_MAP.get(a, "jump"),
-            ...:a,
-        ].ask({})
+        decision = ACTION.run(snap=snap, air=world.air, backend=bk)
+        a = decision["action"]
+        t = decision["tick"]
         world.step(a)
         trace.append(
             {

@@ -12,10 +12,9 @@ import math
 from dataclasses import dataclass
 from dataclasses import field
 
+import jevx as j
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import feels
-from jevx.py import pick
 
 MAX_OPTS, PER_TYPE, TOTAL = 255, 10, 60
 MAX_CHARS = 200
@@ -61,12 +60,10 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
         "goal": goal,
     }
     if not nbrs:
-        reached = feels(
-            "has the goal been reached at the current node?",
-            {"state": state, "edges": []},
-            client=s1,
-        )
-        return [], reached.over(0.5)
+        result = j.vector(
+            reached=j.noul("has the goal been reached at the current node?")
+        ).ask({"state": state, "edges": []}, client=s1)
+        return [], result.reached.over(0.5)
     keys, crit = [], {}
     for i, e in enumerate(nbrs):
         k = f"e{i}"
@@ -75,21 +72,17 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
         crit[k] = (
             f"{e['rel']} -> {t['label']} {clean_props(t.get('props', {}), t.get('identity', []))}"
         )
-    c = pick(
-        f"Choose the single outgoing relationship advancing this goal: {goal['description']}",
-        {**state, " hop": len(keys)},
-        crit,
-        client=s1,
-    )
-    order = sorted(c.probabilities.items(), key=lambda kv: -kv[1])
+    result = j.vector(
+        edge=j.choice(
+            f"Choose the single outgoing relationship advancing this goal: {goal['description']}",
+            crit,
+        ),
+        reached=j.noul("has the goal been reached at the current node?"),
+    ).ask({**state, "hop": len(keys)}, client=s1)
+    order = sorted(result.edge.probabilities.items(), key=lambda kv: -kv[1])
     by_key = {k: e for k, e in keys}
     branches = [(p, by_key[k]) for k, p in order if k in by_key]  # drop off-list keys
-    reached = feels(
-        "has the goal been reached at the current node?",
-        {**state, "picked": c.choice},
-        client=s1,
-    )
-    return branches, reached.over(0.5)
+    return branches, result.reached.over(0.5)
 
 
 @ensure(

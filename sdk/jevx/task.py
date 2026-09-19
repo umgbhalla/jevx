@@ -95,6 +95,12 @@ class TaskRun:
         selected = path[-limit:] if limit else []
         return {"task": self.name, "head": self.head, "history": selected}
 
+    def checkout(self, event_id: int) -> None:
+        """Select an existing event as the parent for the next branch."""
+        if isinstance(event_id, bool) or not 0 <= event_id < len(self.history):
+            raise ValueError(f"unknown history event {event_id!r}")
+        self.head = event_id
+
     @contextmanager
     def branch(self, name: str, *, restore: bool = True) -> Iterator[TaskRun]:
         parent = self.head

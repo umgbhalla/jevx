@@ -7,18 +7,36 @@ Intents map natural commands to built-in actions with a confidence floor.
 
 from __future__ import annotations
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import case
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
 
-ROOM = vector(
-    occupied=noul("is the room occupied?"),
-    comfort=score("thermal comfort?", ("cold", "fine", "hot")),
-    quiet_hours=noul("is it night/quiet hours?"),
+x = j.x
+
+ROOM = j.vector(
+    occupied=j.noul("is the room occupied?"),
+    comfort=j.score("thermal comfort?", ("cold", "fine", "hot")),
+    quiet_hours=j.noul("is it night/quiet hours?"),
+)
+
+
+def _readings(r):
+    return {
+        "occupied": {"prob": float(r.occupied)},
+        "comfort": {
+            "score": float(r.comfort),
+            "confidence": r.comfort.confidence,
+            "probs": r.comfort.probabilities,
+        },
+        "quiet_hours": {"prob": float(r.quiet_hours)},
+    }
+
+
+ROOM_TICK = (
+    j.input(state=x)
+    | j.keep(room=ROOM.on(x.state))
+    | j.keep(readings=j.compute(_readings, x.room))
 )
 
 
@@ -28,18 +46,7 @@ ROOM = vector(
 )
 def tick(state: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
-    r = ROOM.ask(state, client=s1)  # 1 request: three named readings
-    return {
-        "readings": {
-            "occupied": {"prob": float(r.occupied)},
-            "comfort": {
-                "score": float(r.comfort),
-                "confidence": r.comfort.confidence,
-                "probs": r.comfort.probabilities,
-            },
-            "quiet_hours": {"prob": float(r.quiet_hours)},
-        }
-    }
+    return {"readings": ROOM_TICK.run(state=state, client=s1)["readings"]}
 
 
 @ensure(
@@ -58,7 +65,7 @@ def interpret(
         dict(actions),
         client=s1,
     )
-    return case[
+    return j.case[
         c.confidence < floor : {"action": None, "why": "below floor", "top": c.choice},
         ... : {"action": c.choice, "confidence": c.confidence},
     ].ask({})

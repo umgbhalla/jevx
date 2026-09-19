@@ -50,25 +50,25 @@ the product t-norm, `|` uses the probabilistic-sum t-conorm, and `~` uses
 complement. These are fuzzy degrees, not calibrated joint probabilities.
 
 This is Python operator syntax building a Jevx expression tree. `.ask(state)`
-collects its distinct question leaves, sends them together, evaluates the
-math and thresholds locally, then selects the first matching case. It does not
-compile a whole application workflow or execute the selected action.
+collects its distinct question leaves, sends them together, evaluates the math
+and thresholds locally, then selects the first matching case. `case` returns
+values; it does not run handlers or other side effects.
 
 For inline batteries, `vector()` names each question once and sends them in one
 request. Noul fields are numeric `P` values, choices retain their distribution,
 and score fields retain confidence and level probabilities:
 
 ```python
-from jevx import choice, noul, score, vector
+import jevx as j
 
-triage = vector(
-    safe=noul("Is the response safe?"),
-    team=choice("Which team owns it?", ("billing", "bug", "account")),
-    severity=score("How severe is it?", ("low", "medium", "high")),
+triage = j.vector(
+    safe=j.noul("Is the response safe?"),
+    team=j.choice("Which team owns it?", ("billing", "bug", "account")),
+    severity=j.score("How severe is it?", ("low", "medium", "high")),
 )
 result = triage.ask(ticket)
 
-destination = case[
+destination = j.case[
     (result.safe >= 0.9) & (result.team.confidence >= 0.6): result.team.choice,
     ...: "human-review",
 ].ask({})
@@ -145,21 +145,63 @@ decision = case[
 ].ask(draft)  # One request for both leaves; thresholds run locally.
 ```
 
+## Compose workflows with `|`
+
+Use `j.x` to select values from the current record, `j.input()` to name run
+inputs, and `j.keep()` to add computed values. Building a flow does not call a
+model. `.run()` executes its stages in order. Questions in one vector or one
+record update share a request; a later update that depends on that result is a
+later request wave.
+
+```python
+import jevx as j
+
+x = j.x
+verify = j.vector(
+    answered=j.noul("Does the draft answer the ticket?"),
+    leaks=j.noul("Does it expose internal information?"),
+)
+
+SEND = (
+    j.input(ticket=x, draft=x)
+    | j.keep(check=verify.on({"ticket": x.ticket.text, "draft": x.draft.text}))
+    | j.case[
+        (x.check.answered >= 0.75) & (x.check.leaks <= 0.05): j.stop("SEND"),
+        ...: j.stop("HUMAN_REVIEW"),
+    ]
+)
+
+result = SEND.run(ticket=ticket, draft=draft)
+```
+
+`j.stop()` returns a terminal result. `j.pass_` continues to the next stage.
+`j.when(rule, action)` runs only when its hard rule passes, and `j.require()`
+checks data before later stages. `j.compute(fn, ...)` defers a pure local
+calculation; `j.min()` and `j.max()` let that calculation stay in the same
+expression. `@j.s2` declares an inert System 2 prompt. It runs only when the
+selected stage needs it. Pass `backend=...` to `.run()` to use the same live or
+scripted S1/S2 bundle.
+
+`|` builds a linear workflow schedule. Independent Noul, Choice, and Score
+questions should be grouped in a `j.vector()` so they share one request.
+Dependent stages run in later waves. Python still owns loops, retries, budgets,
+validation, and external actions.
+
 Use a rule for explicit thresholds and arithmetic for a weighted score. A
 weighted score is not automatically a calibrated probability.
 
 Use `case[...]` for ordered policy results. Keep Python unions when actions
-have distinct domain data, and compose indexed handoffs with `>>`. The
-[algebraic flow example](examples/algebraic_flow.py) shows typed outcomes and
-handoffs. This follows the same type-algebra idea as
+have distinct domain data. The [algebraic flow example](examples/algebraic_flow.py)
+shows a lazy judgment piped into a typed outcome. This follows the same
+type-algebra idea as
 [Instructor's union and iterable response models](https://python.useinstructor.com/concepts/iterable/),
 while Jevx keeps decision thresholds and branch policy in Python.
 
 ```python
 type Outcome = Allowed | HumanReview | Retry
 
-flow = start("ticket", "judged", judge) >> classify
-outcome, context = flow(ticket)
+flow = j.flow(safety_expression) | classify
+outcome = flow.run(ticket)
 
 match outcome:
     case Allowed(confidence=p): send_reply(p)

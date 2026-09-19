@@ -11,7 +11,6 @@ from __future__ import annotations
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import case
 from jevx.relational import Table
 
 
@@ -40,28 +39,24 @@ def select(
         }
     )
     scores = Table(tests, client=s1, context={"diff": diff[:4000]}).noul(instructions)
-    buckets = [
-        case[
-            score < skip_at: "skip",
-            score < review_at: "review",
-            ...: "run",
-        ].ask({})
-        for score in scores
-    ]
+    skip_mask = [score < skip_at for score in scores]
+    review_mask = [(score >= skip_at) & (score < review_at) for score in scores]
     run = [
         {**test, "p_affected": float(score)}
-        for test, score, bucket in zip(tests, scores, buckets, strict=True)
-        if bucket == "run"
+        for test, score, skip, review in zip(
+            tests, scores, skip_mask, review_mask, strict=True
+        )
+        if not skip and not review
     ]
     skip = [
         {**test, "p_affected": float(score)}
-        for test, score, bucket in zip(tests, scores, buckets, strict=True)
-        if bucket == "skip"
+        for test, score, selected in zip(tests, scores, skip_mask, strict=True)
+        if selected
     ]
     review = [
         {**test, "p_affected": float(score)}
-        for test, score, bucket in zip(tests, scores, buckets, strict=True)
-        if bucket == "review"
+        for test, score, selected in zip(tests, scores, review_mask, strict=True)
+        if selected
     ]
     # review band runs too — unsure is not safe to skip
     return {

@@ -11,12 +11,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from dataclasses import field
 
+import jevx as j
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import choice
-from jevx.py import noul
-from jevx.py import vector
+
+x = j.x
 
 VERBS = ("forward", "back", "left", "right", "stop", "dock", "snapshot", "done")
 CONFIRM = {"dock"}
@@ -32,9 +32,22 @@ FLOORS = {
 }
 
 
-TICK = vector(
-    verb=choice("which single verb advances the mission?", VERBS),
-    escalate=noul("is the situation beyond the verb list?"),
+TICK = j.vector(
+    verb=j.choice("which single verb advances the mission?", VERBS),
+    escalate=j.noul("is the situation beyond the verb list?"),
+)
+
+DECISION = (
+    j.input(obs=x, goal=x)
+    | j.keep(tick=TICK.on({"obs": x.obs, "goal": x.goal}))
+    | j.case[
+        x.tick.escalate >= 0.5: j.stop("escalated", tick=x.tick),
+        x.tick.verb.confidence
+        < j.compute(lambda verb: FLOORS[verb], x.tick.verb.choice): j.stop(
+            "hold", tick=x.tick
+        ),
+        ...: j.stop("selected", verb=x.tick.verb.choice, tick=x.tick),
+    ]
 )
 
 
@@ -103,12 +116,12 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
             bot.exec("stop")
             return {"result": "aborted", "why": why, "steps": step}
         obs = bot.observe()
-        t = TICK.ask({"obs": obs, "goal": bot.goal}, client=s1)  # 1 request
-        if t.escalate >= 0.5:
+        decision = DECISION.run(obs=obs, goal=bot.goal, client=s1)  # 1 request
+        if decision["action"] == "escalated":
             return {"result": "escalated", "obs": obs}
-        v = t.verb.choice
-        if t.verb.confidence < FLOORS[v]:
+        if decision["action"] == "hold":
             continue  # below floor: hold position this tick (not counted as repeat)
+        v = decision["verb"]
         if v == last:
             repeats += 1
             if repeats >= 8:

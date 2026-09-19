@@ -11,11 +11,12 @@ import time
 from dataclasses import dataclass
 from dataclasses import field
 
+import jevx as j
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import choice
-from jevx.py import vector
+
+x = j.x
 
 
 @dataclass
@@ -55,8 +56,8 @@ class SimMarket:
         return o
 
 
-Direction = vector(
-    direction=choice(
+Direction = j.vector(
+    direction=j.choice(
         "Will price be higher or lower than mid after the horizon, by more than spread?",
         {
             "buy": "Price rises by more than the spread.",
@@ -65,16 +66,23 @@ Direction = vector(
     )
 )
 
+TRADE_POLICY = (
+    j.input(side=x, exposure=x, max_pos=x, cash=x, qty=x, mid=x, dry=x)
+    | j.case[
+        x.exposure > x.max_pos: j.stop("BLOCK", why="exposure cap"),
+        (x.side == "buy") & (x.cash < x.qty * x.mid): j.stop("BLOCK", why="margin"),
+        x.dry >= 0.5: j.stop("ALLOW", why="dry-run"),
+        ...: j.stop("ALLOW", why="live"),
+    ]
+)
+
 
 def allowed(m: SimMarket, side: str, qty: float, max_pos: float, dry: bool) -> tuple[bool, str]:
     exposure = abs(m.position) + sum(o["qty"] for o in m.resting) + qty
-    if exposure > max_pos:
-        return False, "exposure cap"
-    if m.cash < qty * m.mid and side == "buy":
-        return False, "margin"
-    if dry:
-        return True, "dry-run"
-    return True, "live"
+    decision = TRADE_POLICY.run(
+        side=side, exposure=exposure, max_pos=max_pos, cash=m.cash, qty=qty, mid=m.mid, dry=dry
+    )
+    return decision["action"] == "ALLOW", decision["why"]
 
 
 @ensure(lambda *a, result=None, **k: True, msg="position reported")

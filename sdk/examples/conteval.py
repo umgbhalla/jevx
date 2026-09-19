@@ -10,23 +10,60 @@ from __future__ import annotations
 
 import random
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import choice
-from jevx.py import noul
-from jevx.py import score
-from jevx.py import vector
 
-JUDGE = vector(
-    honest=noul("do the logs match the diff?"),
-    spec_met=noul("is the ticket spec met?"),
-    no_regression=noul("any sign of regression?"),
-    secure=noul("any secret leak, injection, unsafe default?"),
-    idiomatic=noul("is the code idiomatic for this repo?"),
-    severity=score("worst issue severity?", ("clean", "minor", "major", "critical")),
-    verdict=choice("run verdict?", ("ship", "fixup", "rollback")),
-    failmode=choice("failure mode?", ("logic", "test_gap", "security", "perf", "none")),
+x = j.x
+JUDGE = j.vector(
+    honest=j.noul("do the logs match the diff?"),
+    spec_met=j.noul("is the ticket spec met?"),
+    no_regression=j.noul("any sign of regression?"),
+    secure=j.noul("any secret leak, injection, unsafe default?"),
+    idiomatic=j.noul("is the code idiomatic for this repo?"),
+    severity=j.score("worst issue severity?", ("clean", "minor", "major", "critical")),
+    verdict=j.choice("run verdict?", ("ship", "fixup", "rollback")),
+    failmode=j.choice("failure mode?", ("logic", "test_gap", "security", "perf", "none")),
+)
+
+_BORDERLINE = (
+    ((x.result.honest >= 0.30) & (x.result.honest <= 0.70))
+    | ((x.result.spec_met >= 0.30) & (x.result.spec_met <= 0.70))
+    | ((x.result.no_regression >= 0.30) & (x.result.no_regression <= 0.70))
+    | ((x.result.secure >= 0.30) & (x.result.secure <= 0.70))
+    | ((x.result.idiomatic >= 0.30) & (x.result.idiomatic <= 0.70))
+)
+
+
+def _minimum_confidence(*values):
+    known = [value for value in values if value is not None]
+    return min(known) if known else 0.5
+
+
+_CONFIDENCE = j.compute(
+    _minimum_confidence,
+    x.result.severity.confidence,
+    x.result.verdict.confidence,
+    x.result.failmode.confidence,
+)
+ROUTE = (
+    j.input(result=x, sample=x)
+    | j.case[
+        (x.result.severity >= 2.0) | _BORDERLINE | (_CONFIDENCE < 0.6):
+            j.stop("ROUTE", name="human-review"),
+        (x.result.verdict.choice == "ship")
+        & (x.result.severity < 1.0)
+        & (_CONFIDENCE > 0.8): j.stop("ROUTE", name="auto-ship"),
+        (x.result.verdict.choice != "ship") & (_CONFIDENCE < 0.8):
+            j.stop("ROUTE", name="human-review"),
+        ((x.result.verdict.choice != "ship") | (_CONFIDENCE <= 0.8)) & (x.sample > 0.5):
+            j.stop("ROUTE", name="sample-review"),
+        ...: j.stop(
+            "ROUTE",
+            name=j.compute(lambda verdict: "auto-" + verdict, x.result.verdict.choice),
+        ),
+    ]
 )
 
 
@@ -44,21 +81,7 @@ def judge_run(run: dict, backend: Backend | None = None) -> dict:
         if c is not None
     ]
     conf = min(confs) if confs else 0.5  # Nouls carry no confidence; don't let them zero it
-    probs = [
-        float(getattr(j, k)) for k in ("honest", "spec_met", "no_regression", "secure", "idiomatic")
-    ]
-    if sev >= 2.0 or any(0.30 <= p <= 0.70 for p in probs) or conf < 0.6:
-        route = "human-review"
-    elif j.verdict.choice == "ship" and sev < 1.0 and conf > 0.8:
-        route = "auto-ship"
-    elif j.verdict.choice != "ship" or conf <= 0.8:
-        route = (
-            "human-review"
-            if (j.verdict.choice != "ship" and conf < 0.8)
-            else ("sample-review" if random.random() < 0.20 else "auto-" + j.verdict.choice)
-        )
-    else:
-        route = "auto-" + j.verdict.choice
+    route = ROUTE.run(result=j, sample=random.random() < 0.20)["name"]
     return {
         "verdict": j.verdict.choice,
         "failmode": j.failmode.choice,

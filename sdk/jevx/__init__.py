@@ -14,12 +14,22 @@ from .client import RetryPolicy
 from .client import evaluate
 from .contracts import ContractError
 from .contracts import ensure
-from .contracts import require
+from .contracts import require as require_contract
 from .errors import AuthError
 from .errors import JevError
 from .errors import RateLimitError
 from .errors import ServerError
 from .errors import ValidationError
+from .flow import Flow
+from .flow import Step
+from .flow import flow
+from .flow import input
+from .flow import keep
+from .flow import pass_
+from .flow import require
+from .flow import step
+from .flow import stop
+from .flow import when
 from .fx import Ask
 from .fx import ConditionDriver
 from .fx import Driver
@@ -55,14 +65,18 @@ from .py import Refused
 from .py import Result
 from .py import Rule
 from .py import Score as ScoreValue
+from .py import Select
 from .py import StaleReplay
 from .py import Vector
 from .py import ask
 from .py import case
 from .py import choice
 from .py import choose_from
+from .py import compute
 from .py import feels
 from .py import gate
+from .py import max
+from .py import min
 from .py import noul
 from .py import pick
 from .py import rate
@@ -71,6 +85,7 @@ from .py import replay
 from .py import route
 from .py import score
 from .py import vector
+from .py import x
 from .questions import Choice
 from .questions import JSONContent
 from .questions import Noul
@@ -82,7 +97,9 @@ from .risk import verdict
 from .s2 import CodexSystem2
 from .s2 import FakeSystem2
 from .s2 import LazyS2
+from .s2 import S2Task
 from .s2 import System2
+from .s2 import s2
 from .snapshots import Checkpoint
 from .snapshots import checkpointed
 from .sweep import sweep
@@ -107,6 +124,7 @@ __all__ = [
     "Driver",
     "Expr",
     "FakeSystem2",
+    "Flow",
     "JevError",
     "LazyS2",
     "Live",
@@ -125,10 +143,12 @@ __all__ = [
     "Response",
     "Result",
     "Rule",
+    "Select",
     "RetryPolicy",
     "Score",
     "ScoreAnswer",
     "ScoreValue",
+    "S2Task",
     "ScriptDriver",
     "ServerError",
     "Sim",
@@ -148,13 +168,20 @@ __all__ = [
     "checkpointed",
     "choose_from",
     "compile",
+    "compute",
     "current",
     "ensure",
     "evaluate",
     "feels",
+    "flow",
     "gate",
+    "input",
+    "keep",
     "lint",
+    "max",
+    "min",
     "pick",
+    "pass_",
     "noul",
     "rate",
     "record",
@@ -162,16 +189,21 @@ __all__ = [
     "repair",
     "replay",
     "require",
+    "require_contract",
     "risk",
     "route",
     "score",
+    "s2",
     "routes_from",
     "run",
     "surrogate",
+    "stop",
+    "step",
     "sweep",
     "use",
     "variants",
     "verdict",
+    "when",
     "Ix",
     "IxStage",
     "JSONContent",
@@ -179,4 +211,5 @@ __all__ = [
     "start",
     "task",
     "vector",
+    "x",
 ]

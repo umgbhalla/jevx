@@ -1,7 +1,11 @@
+import json
+
 from examples import browser_loop
 from examples import conteval
 from examples import context_compact
+from examples import flow_class
 from examples import game_loop
+from examples import invoice_cascade
 from examples import pipe as pipe_example
 from examples import prefs_review
 from examples import rag_guard
@@ -12,6 +16,13 @@ from examples import support_copilot
 from examples import test_select as test_select_example
 from jevx import JSONContent
 from jevx import case
+from jevx import flow
+from jevx import input as flow_input
+from jevx import keep
+from jevx import require as require_fields
+from jevx import s2
+from jevx import stop
+from jevx import x
 from jevx.answers import parse_answer
 from jevx.backends import Backend
 from jevx.backends import Sim
@@ -28,6 +39,7 @@ from jevx.py import choose_from
 from jevx.py import noul
 from jevx.py import score
 from jevx.py import vector
+from jevx.s2 import FakeSystem2
 from jevx.task import task
 
 
@@ -332,6 +344,39 @@ def test_support_example_sends_only_after_vector_policy_passes():
     result = support_copilot.handle("Charge duplicated", backend)
 
     assert result["action"] == "send-draft"
+
+
+def test_support_example_revises_once_then_rechecks_before_sending():
+    backend = Sim(
+        s1_script={
+            "q0": [
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.9},
+            ],
+            "q1": [
+                {
+                    "type": "choice",
+                    "choice": "billing",
+                    "probabilities": {"billing": 0.9, "bug": 0.05, "account": 0.05},
+                    "confidence": 0.9,
+                },
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.01},
+            ],
+            "q2": [
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.1},
+                {"type": "noul", "noul": 0.02},
+            ],
+        },
+        s2_texts=["Needs an edit.", "Your billing issue is under review."],
+    )
+
+    result = support_copilot.handle("Charge duplicated", backend)
+
+    assert result["action"] == "send-draft"
+    assert result["text"] == "Your billing issue is under review."
 
 
 def test_rag_and_shell_examples_keep_their_security_gates():
@@ -725,3 +770,203 @@ def test_choose_from_supports_described_vector_routes():
         "what": "Charges and refunds"
     }
     assert set(driver.trace[1]["questions"]) == {"q0"}
+
+
+def test_flow_composes_in_order_and_batches_expression_leaves_once():
+    safe = noul("Is the answer safe?")
+    useful = noul("Does it answer the ticket?")
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "q0": [{"type": "noul", "noul": 0.95}],
+                "q1": [{"type": "noul", "noul": 0.90}],
+            }
+        )
+    )
+    result_flow = flow(safe & useful) | (lambda p: "send" if p.over(0.8) else "review")
+
+    assert driver.trace == []
+    with use(driver):
+        result = result_flow.run({"ticket": "refund status"})
+
+    assert result == "send"
+    assert len(driver.trace) == 1
+    assert set(driver.trace[0]["questions"]) == {"q0", "q1"}
+
+
+def test_uses_example_uses_vector_and_choice_local_confidence():
+    assert flow_class.Flow().run("refund status") == {
+        "action": "route:billing",
+        "urgent": True,
+    }
+
+
+def test_record_flow_batches_bound_vector_and_stops_at_first_matching_case():
+    checks = vector(
+        useful=noul("Does the draft answer the ticket?"),
+        safe=noul("Is the draft safe to send?"),
+    )
+    flow = (
+        flow_input(ticket=x, draft=x)
+        | keep(text=x.draft.text[:100])
+        | keep(check=checks.on({"ticket": x.ticket.text, "draft": x.text}))
+        | case[
+            (x.check.useful >= 0.8) & (x.check.safe >= 0.9): stop("SEND"),
+            ...: stop("REVIEW"),
+        ]
+        | keep(done=True)
+    )
+    driver = TraceDriver(
+        ScriptDriver(
+            {
+                "q0": [{"type": "noul", "noul": 0.95}],
+                "q1": [{"type": "noul", "noul": 0.98}],
+            }
+        )
+    )
+
+    assert driver.trace == []
+    with use(driver):
+        result = flow.run(
+            ticket={"text": "refund status"},
+            draft={"text": "Your refund is on the way."},
+        )
+
+    assert result == {"action": "SEND"}
+    assert len(driver.trace) == 1
+    assert set(driver.trace[0]["questions"]) == {"q0", "q1"}
+    assert driver.trace[0]["state"] == {
+        "ticket": "refund status",
+        "draft": "Your refund is on the way.",
+    }
+
+
+def test_require_stops_before_any_judgment_when_fields_are_missing():
+    flow = (
+        flow_input(invoice=x)
+        | require_fields(x.invoice, "inv_no", "total", else_=stop("HOLD_FOR_DOCS"))
+        | keep(checked=True)
+    )
+    driver = TraceDriver(ScriptDriver({}))
+
+    with use(driver):
+        result = flow.run(invoice={"inv_no": "A-1"})
+
+    assert result == {"action": "HOLD_FOR_DOCS"}
+    assert driver.trace == []
+
+
+def test_selector_can_read_fields_matching_internal_names():
+    assert (x.path == "src/main.py").ask({"path": "src/main.py"}) is True
+
+
+def test_s2_prompt_is_inert_and_runs_only_inside_selected_stop():
+    @s2
+    def extract(text: str) -> dict[str, str]:
+        """Extract the invoice number from the supplied text as JSON."""
+
+    workflow = (
+        flow_input(text=x)
+        | keep(safe=noul("Is the invoice safe to process?"))
+        | case[
+            x.safe >= 0.8: stop("PROCESS", extracted=extract(x.text)),
+            ...: stop("REVIEW"),
+        ]
+    )
+
+    low = Sim(s1_script={"q0": [{"type": "noul", "noul": 0.1}]})
+    low_s2 = FakeSystem2([])
+    rejected = workflow.run(text="Invoice A-1", client=low.s1(), s2=low_s2)
+    assert rejected == {"action": "REVIEW"}
+    assert low_s2.prompts == []
+
+    high = Sim(s1_script={"q0": [{"type": "noul", "noul": 0.95}]})
+    high_s2 = FakeSystem2(['{"inv_no":"A-1"}'])
+    result = workflow.run(text="Invoice A-1", client=high.s1(), s2=high_s2)
+    assert result == {"action": "PROCESS", "extracted": {"inv_no": "A-1"}}
+    assert "Invoice A-1" in high_s2.prompts[0]
+
+
+def test_invoice_workflow_compiles_each_dependent_question_wave():
+    invoice = {
+        "inv_no": "A-1",
+        "date": "2026-01-01",
+        "due": "2026-01-31",
+        "currency": "USD",
+        "total": 110.0,
+        "tax": 10.0,
+        "subtotal": 100.0,
+        "lines": [],
+        "bank": "example",
+        "vendor": "Acme",
+    }
+
+    def noul_answer(probability):
+        return {"type": "noul", "noul": probability}
+
+    def choice_answer(value, probabilities):
+        return {
+            "type": "choice",
+            "choice": value,
+            "probabilities": probabilities,
+            "confidence": 1.0,
+        }
+
+    script = {
+        "q0": [
+            choice_answer(
+                "invoice",
+                {"invoice": 0.96, "statement": 0.01, "quote": 0.02, "reminder": 0.01},
+            ),
+            noul_answer(0.02),
+            noul_answer(0.02),
+        ],
+        "q1": [noul_answer(0.02), noul_answer(0.02), noul_answer(0.02)],
+        "q2": [noul_answer(0.02), noul_answer(0.02)],
+        "q3": [noul_answer(0.02), noul_answer(0.02)],
+        "q4": [
+            choice_answer(
+                "priced",
+                {"priced": 0.96, "component": 0.02, "extra": 0.01, "not_ours": 0.01},
+            )
+        ],
+        "q5": [
+            {
+                "type": "score",
+                "score": 0,
+                "legend": {"0": "routine", "1": "pressing", "2": "threatening"},
+                "probabilities": {"0": 1.0, "1": 0.0, "2": 0.0},
+                "confidence": 1.0,
+            }
+        ],
+    }
+
+    class OfflineBackend(Backend):
+        def __init__(self):
+            self.worker = FakeSystem2([json.dumps(invoice)])
+
+        def s1(self):
+            return None
+
+        def s2(self):
+            return self.worker
+
+    backend = OfflineBackend()
+    trace = TraceDriver(ScriptDriver(script))
+    with use(trace):
+        result = invoice_cascade.process(
+            {"text": "Invoice A-1", "vendor": "Acme", "po_total": 110.0},
+            [],
+            {"USD": 1.0},
+            backend=backend,
+        )
+
+    assert result["action"] == "RELEASED"
+    assert result["ledger"] == [invoice]
+    assert len(trace.trace) == 3
+    assert [set(call["questions"]) for call in trace.trace] == [
+        {"q0", "q1", "q2", "q3", "q4", "q5"},
+        {"q0", "q1", "q2", "q3"},
+        {"q0", "q1"},
+    ]
+    assert len(backend.worker.prompts) == 1

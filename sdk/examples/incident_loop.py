@@ -9,23 +9,39 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import jevx as j
 from jevx import Backend
 from jevx import Live
-from jevx import case
 from jevx import ensure
-from jevx import noul
 from jevx import task
-from jevx import vector
 from jevx.redact import scrub
 
-SYMPTOMS = vector(
-    down=noul("is the service down or erroring?"),
-    user_facing=noul("are users affected?"),
-    data_risk=noul("is data loss or corruption plausible?"),
+x = j.x
+
+SYMPTOMS = j.vector(
+    down=j.noul("is the service down or erroring?"),
+    user_facing=j.noul("are users affected?"),
+    data_risk=j.noul("is data loss or corruption plausible?"),
 )
 
-VERIFIED = (noul("are the reported symptoms gone from these logs?") >= 0.8) & (
-    noul("does the fix address the root cause, not just symptoms?") >= 0.7
+VERIFIED = (j.noul("are the reported symptoms gone from these logs?") >= 0.8) & (
+    j.noul("does the fix address the root cause, not just symptoms?") >= 0.7
+)
+
+SYMPTOM_POLICY = (
+    j.input(symptoms=x)
+    | j.case[
+        x.symptoms.down < 0.5: j.stop("NOOP", why="no outage in logs"),
+        x.symptoms.data_risk >= 0.35: j.stop(
+            "ESCALATE",
+            why="possible data risk - human first",
+            sev=j.compute(
+                lambda user_facing: "SEV-1" if user_facing >= 0.5 else "SEV-2",
+                x.symptoms.user_facing,
+            ),
+        ),
+        ...: j.stop("CONTINUE"),
+    ]
 )
 
 
@@ -58,29 +74,17 @@ def respond(
     logs = scrub(logs)
     with task("incident", backend if backend is not None else Live()) as run:
         symptoms = run.ask(SYMPTOMS, logs)
-        stop = case[
-            symptoms.down < 0.5: {"action": "NOOP", "why": "no outage in logs"},
-            symptoms.data_risk >= 0.35: {
-                "action": "ESCALATE",
-                "why": "possible data risk - human first",
-                "sev": "SEV-1" if symptoms.user_facing >= 0.5 else "SEV-2",
-            },
-            ...: None,
-        ].ask({})
-        if stop is not None:
-            return _result(run, **stop)
-
-        severity = case[
-            symptoms.user_facing >= 0.5: "SEV-1",
-            ...: "SEV-2",
-        ].ask({})
+        stop = SYMPTOM_POLICY.run(symptoms=symptoms)
+        if stop["action"] != "CONTINUE":
+            return _result(run, **{key: value for key, value in stop.items() if key != "action"}, action=stop["action"])
+        severity = "SEV-1" if symptoms.user_facing >= 0.5 else "SEV-2"
         for round_no in range(max_rounds):
             h = run.pick(
                 "most likely cause?",
                 {**run.context(), "logs": logs[-4000:], "round": round_no},
                 HYPOTHESES,
             )
-            selection = case[
+            selection = j.case[
                 h.confidence < 0.5: "uncertain",
                 ...: "selected",
             ].ask({})

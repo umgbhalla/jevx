@@ -14,6 +14,7 @@ from jevx.py import case
 from jevx.py import feels
 from jevx.py import noul
 from jevx.py import vector
+from jevx.relational import Table
 
 
 def overlap(a: str, b: str) -> float:
@@ -57,17 +58,13 @@ def answer(query: str, corpus: list[dict], backend: Backend | None = None) -> di
     bk = backend or Live()
     s1 = bk.s1()
     cands = retrieve(query, corpus)
-    # S1 rerank: one Noul per pair, keep top-6 above 0.30
-    ranked = []
-    for c in cands:
-        p = feels(
-            "could this passage supply a rule the query cites?",
-            {"query": query, "passage": c["text"]},
-            client=s1,
-        )
-        if float(p) > 0.40:
-            ranked.append((float(p), c))
-    ranked.sort(key=lambda t: -t[0])
+    # One batched Noul pass across candidates, then local threshold and ranking.
+    rows = [{"query": query, "passage": c["text"], "document": c} for c in cands]
+    scores = Table(rows, client=s1).noul("Could this passage supply a rule the query cites?")
+    ranked = sorted(
+        ((float(p), row["document"]) for row, p in zip(rows, scores, strict=True) if p > 0.40),
+        key=lambda item: -item[0],
+    )
     if not ranked:
         return {"action": "refuse-escalate", "why": "nothing rankable"}
     top = [c for _, c in ranked[:6]]

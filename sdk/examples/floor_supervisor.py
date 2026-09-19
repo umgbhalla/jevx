@@ -13,14 +13,15 @@ import os
 import time
 from collections.abc import Callable
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.contracts import ensure
 from jevx.programs import assess_due
 from jevx.programs import session
 from jevx.programs import tail
 from jevx.py import Result
-from jevx.py import noul
-from jevx.py import vector
+
+x = j.x
 
 # thresholds (FactoryPolicy order matters: human -> stuck/off-track -> finish -> verify)
 T_HUMAN, T_STUCK, T_OFF, T_FINISH, T_REQ, T_TESTS, T_IMPL, T_VERIFY = (
@@ -37,32 +38,32 @@ MAX_ITERS, MAX_RETRIES, MAX_STEERS = 20, 1, 1
 MIN_INTERVAL, PERIODIC, TAIL, MAX_EVENTS = 5.0, 30.0, 12000, 30
 
 
-ASSESS = vector(
-    implementation_complete=noul(
+ASSESS = j.vector(
+    implementation_complete=j.noul(
         "Is the implementation work required by the original job complete?"
     ),
-    tests_sufficient=noul(
+    tests_sufficient=j.noul(
         "Does the work have sufficient relevant test coverage and passing verification?"
     ),
-    requirements_satisfied=noul(
+    requirements_satisfied=j.noul(
         "Does the current repository satisfy the original free-form job as a whole?"
     ),
-    needs_verification=noul(
+    needs_verification=j.noul(
         "Does the current state warrant an independent verification pass before finishing?"
     ),
-    meaningful_progress=noul(
+    meaningful_progress=j.noul(
         "Is the active or most recent worker making meaningful progress toward the job?"
     ),
-    worker_stuck=noul(
+    worker_stuck=j.noul(
         "Does the active or most recent worker appear stuck, looping, or unable to advance?"
     ),
-    work_off_track=noul(
+    work_off_track=j.noul(
         "Is the current work drifting from the original job or making unrelated changes?"
     ),
-    ready_to_finish=noul(
+    ready_to_finish=j.noul(
         "Given all evidence, is the factory job ready to be declared complete?"
     ),
-    needs_human=noul(
+    needs_human=j.noul(
         "Does this situation require human judgment, credentials, clarification, or permission?"
     ),
 )
@@ -95,6 +96,29 @@ def build_steer(progress: float, stuck: float, off_track: float, events: list[st
     )
 
 
+_STUCK = (x.assessment.worker_stuck >= T_STUCK) | (x.assessment.work_off_track >= T_OFF)
+_READY = (
+    (x.assessment.ready_to_finish >= T_FINISH)
+    & (x.assessment.requirements_satisfied >= T_REQ)
+    & (x.assessment.tests_sufficient >= T_TESTS)
+    & (x.assessment.implementation_complete >= T_IMPL)
+)
+
+DECIDE = (
+    j.input(assessment=x, steers=x, retries=x, verified=x)
+    | j.case[
+        x.assessment.needs_human >= T_HUMAN: j.stop("ESCALATE"),
+        _STUCK & (x.steers < MAX_STEERS): j.stop("STEER"),
+        _STUCK & (x.steers >= MAX_STEERS) & (x.retries < MAX_RETRIES): j.stop("RETRY"),
+        _STUCK: j.stop("ESCALATE"),
+        _READY & (x.assessment.needs_verification >= T_VERIFY) & (x.verified == 0):
+            j.stop("START_VERIFIER"),
+        _READY: j.stop("FINISH"),
+        ...: j.stop("CONTINUE"),
+    ]
+)
+
+
 @ensure(
     lambda *a, result=None, **k: (
         result in ("ESCALATE", "STEER", "RETRY", "FINISH", "START_VERIFIER", "CONTINUE")
@@ -102,22 +126,9 @@ def build_steer(progress: float, stuck: float, off_track: float, events: list[st
     "action is a known FactoryAction",
 )
 def decide(a: Result, steers_used: int, retries_used: int, verified: bool) -> str:
-    if a.needs_human >= T_HUMAN:
-        return "ESCALATE"
-    if a.worker_stuck >= T_STUCK or a.work_off_track >= T_OFF:
-        if steers_used < MAX_STEERS:
-            return "STEER"
-        return "RETRY" if retries_used < MAX_RETRIES else "ESCALATE"
-    if (
-        a.ready_to_finish >= T_FINISH
-        and a.requirements_satisfied >= T_REQ
-        and a.tests_sufficient >= T_TESTS
-        and a.implementation_complete >= T_IMPL
-    ):
-        if a.needs_verification >= T_VERIFY and not verified:
-            return "START_VERIFIER"
-        return "FINISH"
-    return "CONTINUE"
+    return DECIDE.run(assessment=a, steers=steers_used, retries=retries_used, verified=verified)[
+        "action"
+    ]
 
 
 def supervise(

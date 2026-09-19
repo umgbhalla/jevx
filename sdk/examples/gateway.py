@@ -7,10 +7,16 @@ thin stdlib http.server wiring included but never required.
 
 from __future__ import annotations
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import case
+
+x = j.x
+
+
+def _handler(routes: dict, name: str):
+    return routes[name]["handler"]
 
 
 @ensure(
@@ -25,28 +31,39 @@ def route_request(
     backend: Backend | None = None,
     conf_at: float = 0.6,
 ) -> dict:
-    from jevx.py import pick
-
-    s1 = (backend or Live()).s1()
-    c = pick(
-        "which route handles this request?",
-        {"method": method, "path": path, "body": body[:2000]},
-        {n: r["description"] for n, r in routes.items()},
-        client=s1,
+    route = j.vector(
+        route=j.choice(
+            "Which route handles this request?",
+            {name: item["description"] for name, item in routes.items()},
+        )
     )
-    return case[
-        c.confidence < conf_at : {
-            "status": 404,
-            "route": None,
-            "confidence": c.confidence,
-        },
-        ... : {
-            "status": 200,
-            "route": c.choice,
-            "confidence": c.confidence,
-            "handler": routes[c.choice]["handler"],
-        },
-    ].ask({})
+    flow = (
+        j.input(method=x, path=x, body=x, routes=x)
+        | j.keep(
+            selection=route.on(
+                {"method": x.method, "path": x.path, "body": x.body[:2000]}
+            )
+        )
+        | j.case[
+            x.selection.route.confidence < conf_at:
+                j.stop("NOT_FOUND", status=404, route=None, confidence=x.selection.route.confidence),
+            ...: j.stop(
+                "ROUTED",
+                status=200,
+                route=x.selection.route.choice,
+                confidence=x.selection.route.confidence,
+                handler=j.compute(_handler, x.routes, x.selection.route.choice),
+            ),
+        ]
+    )
+    result = flow.run(
+        method=method,
+        path=path,
+        body=body,
+        routes=routes,
+        backend=backend or Live(),
+    )
+    return {key: value for key, value in result.items() if key != "action"}
 
 
 def serve(

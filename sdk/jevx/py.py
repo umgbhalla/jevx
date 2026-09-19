@@ -30,16 +30,20 @@ import inspect
 import json
 import sys as _sys
 import typing as _typing
+from builtins import max as _max
+from builtins import min as _min
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from numbers import Real
 from operator import add
+from operator import eq
 from operator import ge
 from operator import gt
 from operator import le
 from operator import lt
 from operator import mul
+from operator import ne
 from operator import neg
 from operator import pow as power
 from operator import sub
@@ -68,6 +72,7 @@ __all__ = [
     "Rule",
     "P",
     "Predicate",
+    "Select",
     "Questions",
     "Refused",
     "Result",
@@ -87,6 +92,10 @@ __all__ = [
     "route",
     "score",
     "vector",
+    "x",
+    "compute",
+    "max",
+    "min",
 ]
 
 
@@ -135,23 +144,98 @@ class P(float):
     def __invert__(self) -> P:
         return P(1.0 - float(self))
 
+    def over(self, threshold: float = 0.5) -> bool:
+        return float(self) >= threshold
+
+    def under(self, threshold: float = 0.5) -> bool:
+        return float(self) < threshold
+
+    def band(self, review_at: float = 0.35, act_at: float = 0.70) -> str:
+        if self.over(act_at):
+            return "yes"
+        if self.over(review_at):
+            return "review"
+        return "no"
+
     def __bool__(self) -> bool:
         raise AmbiguousTruth(
             f"bool({float(self)!r}) is ambiguous — use .over(t), .under(t) or .band()"
         )
 
-    def over(self, t: float = 0.5) -> bool:
-        return float(self) >= t
 
-    def under(self, t: float = 0.5) -> bool:
-        return float(self) < t
+@dataclass(frozen=True, eq=False)
+class Select:
+    """Lazy path into the current record, with Python arithmetic and comparisons."""
 
-    def band(self, review_at: float = 0.35, act_at: float = 0.70) -> str:
-        if float(self) >= act_at:
-            return "yes"
-        if float(self) >= review_at:
-            return "review"
-        return "no"
+    _steps: tuple[Any, ...] = ()
+
+    def __getattr__(self, name: str) -> Select:
+        if name.startswith("_"):
+            raise AttributeError(name)
+        return Select((*self._steps, name))
+
+    def __getitem__(self, key: Any) -> Select:
+        return Select((*self._steps, key))
+
+    def __add__(self, other: Any) -> Expr:
+        return _expr(self) + other
+
+    def __radd__(self, other: Any) -> Expr:
+        return _expr(self).__radd__(other)
+
+    def __sub__(self, other: Any) -> Expr:
+        return _expr(self) - other
+
+    def __rsub__(self, other: Any) -> Expr:
+        return _expr(self).__rsub__(other)
+
+    def __mul__(self, other: Any) -> Expr:
+        return _expr(self) * other
+
+    def __rmul__(self, other: Any) -> Expr:
+        return _expr(self).__rmul__(other)
+
+    def __truediv__(self, other: Any) -> Expr:
+        return _expr(self) / other
+
+    def __rtruediv__(self, other: Any) -> Expr:
+        return _expr(self).__rtruediv__(other)
+
+    def __pow__(self, other: Any) -> Expr:
+        return _expr(self) ** other
+
+    def __rpow__(self, other: Any) -> Expr:
+        return _expr(self).__rpow__(other)
+
+    def __neg__(self) -> Expr:
+        return -_expr(self)
+
+    def __abs__(self) -> Expr:
+        return abs(_expr(self))
+
+    def __lt__(self, other: Any) -> Rule:
+        return Rule("lt", self, other)
+
+    def __le__(self, other: Any) -> Rule:
+        return Rule("le", self, other)
+
+    def __gt__(self, other: Any) -> Rule:
+        return Rule("gt", self, other)
+
+    def __ge__(self, other: Any) -> Rule:
+        return Rule("ge", self, other)
+
+    def __eq__(self, other: Any) -> Rule:  # ty: ignore[invalid-method-override]
+        return Rule("eq", self, other)
+
+    def __ne__(self, other: Any) -> Rule:  # ty: ignore[invalid-method-override]
+        return Rule("ne", self, other)
+
+    def isin(self, *values: Any) -> Rule:
+        return Rule("in", self, values)
+
+    def __bool__(self) -> bool:
+        raise AmbiguousTruth("a selector is symbolic; compare it inside a Jevx rule")
 
 
 @dataclass(frozen=True, eq=False)
@@ -246,16 +330,16 @@ class Predicate[StateT]:
     def __abs__(self) -> Expr:
         return abs(_expr(self))
 
-    def __lt__(self, other: Real | Expr) -> Rule:
+    def __lt__(self, other: Any) -> Rule:
         return _expr(self) < other
 
-    def __le__(self, other: Real | Expr) -> Rule:
+    def __le__(self, other: Any) -> Rule:
         return _expr(self) <= other
 
-    def __gt__(self, other: Real | Expr) -> Rule:
+    def __gt__(self, other: Any) -> Rule:
         return _expr(self) > other
 
-    def __ge__(self, other: Real | Expr) -> Rule:
+    def __ge__(self, other: Any) -> Rule:
         return _expr(self) >= other
 
     def __bool__(self) -> bool:
@@ -332,7 +416,7 @@ class Expr:
         return _evaluate(self, state, client)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Rule:
     """Hard threshold policy. Unlike Predicate, `&` means both rules pass."""
 
@@ -360,15 +444,37 @@ class Rule:
         return _evaluate(self, state, client)
 
 
+@dataclass(frozen=True)
+class Compute:
+    fn: Any
+    args: tuple[Any, ...]
+    kwargs: Mapping[str, Any]
+
+
+def compute(fn: Any, /, *args: Any, **kwargs: Any) -> Expr:
+    """Defer a pure local function over selectors until its flow node runs."""
+    if not callable(fn):
+        raise TypeError("compute() needs a callable")
+    return _expr(Compute(fn, args, kwargs))
+
+
+def min(*values: Any) -> Expr:
+    return compute(_min, *values)
+
+
+def max(*values: Any) -> Expr:
+    return compute(_max, *values)
+
+
 def _numeric(value: object) -> Expr | float:
-    if isinstance(value, (Predicate, Expr)):
+    if isinstance(value, (Predicate, Expr, Select)):
         return _expr(value)
     if isinstance(value, Real):
         return float(value)
     raise TypeError(f"expected a numeric expression, got {type(value).__name__}")
 
 
-def _expr(value: Predicate | Expr | Real) -> Expr:
+def _expr(value: Predicate | Expr | Select | Compute | Real) -> Expr:
     return value if isinstance(value, Expr) else Expr("value", value)
 
 
@@ -409,9 +515,17 @@ def _evaluate(root: Any, state: Any, client: Client | None) -> Any:
                 collect(node.right)
         elif isinstance(node, (_NoulQ, _ChoiceQ, _ScoreQ)):
             register(node)
+        elif isinstance(node, Vector):
+            collect(node.fields)
         elif isinstance(node, Mapping):
             for child in node.values():
                 collect(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                collect(child)
+        elif isinstance(node, Compute):
+            collect(node.args)
+            collect(node.kwargs)
 
     collect(root)
     raw = _decide(state, questions, client) if questions else {}
@@ -458,7 +572,23 @@ def _evaluate(root: Any, state: Any, client: Client | None) -> Any:
                 "le": le,
                 "gt": gt,
                 "ge": ge,
+                "eq": eq,
+                "ne": ne,
+                "in": lambda value, values: value in values,
             }[node.op](evaluate(node.left), evaluate(node.right))
+        if isinstance(node, Compute):
+            return node.fn(*evaluate(node.args), **evaluate(node.kwargs))
+        if isinstance(node, Select):
+            value = state
+            for part in node._steps:
+                part = evaluate(part) if isinstance(part, (Select, Expr, Rule)) else part
+                if isinstance(part, slice) or not isinstance(part, str):
+                    value = value[part]
+                elif isinstance(value, Mapping):
+                    value = value[part]
+                else:
+                    value = getattr(value, part)
+            return value
         if isinstance(node, (_NoulQ, _ChoiceQ, _ScoreQ)):
             answer = raw[ids[id(node)]]
             if isinstance(node, _NoulQ):
@@ -472,8 +602,17 @@ def _evaluate(root: Any, state: Any, client: Client | None) -> Any:
                 legend=levels,
                 probabilities=answer.probabilities,
             )
+        if isinstance(node, Vector):
+            values = evaluate(node.fields)
+            return Result(values, values, node.fields)
+        if isinstance(node, BoundVector):
+            return node.ask(state, client=client)
         if isinstance(node, Mapping):
             return {key: evaluate(value) for key, value in node.items()}
+        if isinstance(node, list):
+            return [evaluate(value) for value in node]
+        if isinstance(node, tuple):
+            return tuple(evaluate(value) for value in node)
         return node
 
     return evaluate(root)
@@ -676,10 +815,24 @@ class Vector:
         values = _evaluate(self.fields, state, client)
         return Result(values, values, self.fields)
 
+    def on(self, state: Any) -> BoundVector:
+        """Bind this battery to a selected record expression."""
+        return BoundVector(self, state)
+
 
 def vector(**fields: Any) -> Vector:
     """Group named questions or lazy expressions into one request."""
     return Vector(fields)
+
+
+@dataclass(frozen=True)
+class BoundVector:
+    vector: Vector
+    state: Any
+
+    def ask(self, state: Any, *, client: Client | None = None) -> Result:
+        bound_state = _evaluate(self.state, state, client)
+        return self.vector.ask(bound_state, client=client)
 
 
 @dataclass(frozen=True)
@@ -718,6 +871,7 @@ class _CaseBuilder:
 
 
 case = _CaseBuilder()
+x = Select()
 
 
 def _hints(cls: type) -> dict[str, Any]:

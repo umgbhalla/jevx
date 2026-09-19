@@ -7,20 +7,18 @@ a choice (abstain), never inferred from low confidence.
 
 from __future__ import annotations
 
+import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import case
 from jevx.py import feels
-from jevx.py import noul
-from jevx.py import pick
-from jevx.py import vector
 
-GATES = vector(
-    acts=noul("must the assistant act on files/accounts/services, not just explain?"),
-    procedure=noul("would an expert consult a documented procedure?"),
-    prose_ok=noul("could a generalist satisfy this in prose with no tools?"),
+GATES = j.vector(
+    acts=j.noul("must the assistant act on files/accounts/services, not just explain?"),
+    procedure=j.noul("would an expert consult a documented procedure?"),
+    prose_ok=j.noul("could a generalist satisfy this in prose with no tools?"),
 )
+x = j.x
 
 
 @ensure(
@@ -45,24 +43,23 @@ def route(
 
 
 def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
-    wide = pick(
-        "which skill, if any, should load for this request?",
-        {"request": request},
-        {s["name"]: s["description"] for s in skills},
-        client=s1,
-    )
-    g = GATES.ask({"request": request}, client=s1)  # 1 request
-    gate_result = case[
-        (g.acts < 0.5 and g.prose_ok >= 0.5)
-        or (g.procedure < 0.5 and g.prose_ok >= 0.5): {
-            "skill": None,
-            "why": "gates closed",
-        },
-        ...:None,
-    ].ask({})
-    if gate_result is not None:
-        return gate_result
-    top = sorted(wide.probabilities.items(), key=lambda kv: -kv[1])[:shortlist]
+    first = j.vector(
+        skill=j.choice(
+            "which skill, if any, should load for this request?",
+            {s["name"]: s["description"] for s in skills},
+        ),
+        **GATES.fields,
+    ).ask({"request": request}, client=s1)  # wide route + three gates, one request
+    closed = j.flow(
+        j.case[
+            ((x.acts < 0.5) | (x.procedure < 0.5)) & (x.prose_ok >= 0.5):
+                j.stop("CLOSED", reason="gates closed"),
+            ...: j.stop("OPEN"),
+        ]
+    ).run(first)
+    if closed["action"] == "CLOSED":
+        return {"skill": None, "why": closed["reason"]}
+    top = sorted(first.skill.probabilities.items(), key=lambda kv: -kv[1])[:shortlist]
     by_name = {s["name"]: s for s in skills}
     detail = {n: f"{by_name[n]['description']}\n{by_name[n].get('full', '')}" for n, _ in top}
     detail["none"] = "No skill in the roster fits this request."
@@ -72,7 +69,7 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
         detail,
         client=s1,
     )
-    fits = {"none": 1.0 - max(wide.probabilities.values())}
+    fits = {"none": 1.0 - max(first.skill.probabilities.values())}
     for n, _ in top:
         fits[n] = float(
             feels(
@@ -82,7 +79,7 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
             )
         )
     best = max(fits, key=lambda name: fits[name])
-    return case[
+    return j.case[
         best == "none" : {"skill": None, "why": "no fit", "fits": fits},
         fits[best] < fits_at : {"skill": None, "why": "no fit", "fits": fits},
         second.choice != best : {"skill": None, "why": "rerank disagrees", "fits": fits},
