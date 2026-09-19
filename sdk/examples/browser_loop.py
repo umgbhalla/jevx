@@ -16,8 +16,8 @@ from dataclasses import field
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import noul
+from jevx.py import vector
 from jevx.s2 import System2
 
 OP_DESCRIPTIONS = {
@@ -39,16 +39,13 @@ TARGET_INSTRUCTIONS = (
 WATCH_DONE_AT, WATCH_STUCK_AT = 0.85, 0.85
 
 
-class Watch(Questions):
-    goal_done: bool = ask(
-        "The goal is achieved: the page and history show the sought outcome.",
-        threshold=WATCH_DONE_AT,
-    )
-    stuck: bool = ask(
+WATCH = vector(
+    goal_done=noul("The goal is achieved: the page and history show the sought outcome."),
+    stuck=noul(
         "Actions so far make no progress (repeats, loops, no change); "
-        "a different strategy is needed.",
-        threshold=WATCH_STUCK_AT,
-    )
+        "a different strategy is needed."
+    ),
+)
 
 
 def pick_alternate(probs: dict, banned: set) -> str | None:
@@ -203,10 +200,10 @@ def reconcile(
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
         op, tgt, conf = choose(goal, snap, recent, s1)
         # pre-exec watcher gates (same state, one extra request)
-        w = Watch(client=s1).ask({"goal": goal, "page": snap, "history": recent[-10:]})
-        if w.goal_done:
+        w = WATCH.ask({"goal": goal, "page": snap, "history": recent[-10:]}, client=s1)
+        if w.goal_done >= WATCH_DONE_AT:
             return {"action": "DONE", "paid": paid, "steps": len(recent)}
-        if w.stuck and len(recent) > 2:
+        if w.stuck >= WATCH_STUCK_AT and len(recent) > 2:
             return {"action": "REPLAN", "why": "watcher: stuck", "log": browser.log}
         if (op, tgt) == last_proposed and not prev_changed and op not in ("WAIT",):
             same_misses += 1

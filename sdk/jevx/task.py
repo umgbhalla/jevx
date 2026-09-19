@@ -20,6 +20,7 @@ from .py import Predicate
 from .py import Questions
 from .py import _freeze
 from .py import pick as _pick
+from .questions import JSONContent
 from .s2 import System2
 
 
@@ -30,9 +31,7 @@ class _TrackedS2:
 
     def ask(self, prompt: str, **kwargs: Any) -> str:
         reply = self.inner.ask(prompt, **kwargs)
-        self.owner.record(
-            "s2.ask", summary=prompt[:160], prompt=prompt, kwargs=kwargs, reply=reply
-        )
+        self.owner.record("s2.ask", summary=prompt[:160], prompt=prompt, kwargs=kwargs, reply=reply)
         return reply
 
     def new_thread(self) -> None:
@@ -87,9 +86,7 @@ class TaskRun:
         current = self.head
         while current is not None:
             event = by_id[current]
-            path.append(
-                {"id": event["id"], "kind": event["kind"], "summary": event["summary"]}
-            )
+            path.append({"id": event["id"], "kind": event["kind"], "summary": event["summary"]})
             current = event["parent"]
         path.reverse()
         selected = path[-limit:] if limit else []
@@ -113,12 +110,14 @@ class TaskRun:
 
     def ask(self, operation: Any, state: Any) -> Any:
         if isinstance(operation, type) and issubclass(operation, Questions):
+
             def invoke():
                 return operation().ask(state)
 
             kind = "jev.battery"
             summary = operation.__name__
         elif isinstance(operation, Predicate):
+
             def invoke():
                 return operation.ask(state)
 
@@ -141,10 +140,10 @@ class TaskRun:
 
     def pick[ChoiceT: str](
         self,
-        question: str,
+        question: JSONContent,
         state: Any,
-        options: Mapping[ChoiceT, str | None] | Sequence[ChoiceT],
-    ) -> ChoiceAnswer[ChoiceT]:
+        options: Mapping[ChoiceT, JSONContent | None] | Sequence[ChoiceT],
+    ) -> ChoiceAnswer:
         trace = TraceDriver(LiveDriver(self._s1))
         with use(trace):
             result = _pick(question, state, options)

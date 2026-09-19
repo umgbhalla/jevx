@@ -7,21 +7,19 @@ Intents map natural commands to built-in actions with a confidence floor.
 
 from __future__ import annotations
 
-from typing import Literal
-
-from jevx.answers import ChoiceAnswer
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
+from jevx.py import case
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
 
-
-class Room(Questions):
-    occupied: bool = ask("is the room occupied?")
-    comfort: Score[Literal["cold", "fine", "hot"]] = ask("thermal comfort?")
-    quiet_hours: bool = ask("is it night/quiet hours?", threshold=0.6)
+ROOM = vector(
+    occupied=noul("is the room occupied?"),
+    comfort=score("thermal comfort?", ("cold", "fine", "hot")),
+    quiet_hours=noul("is it night/quiet hours?"),
+)
 
 
 @ensure(
@@ -30,21 +28,23 @@ class Room(Questions):
 )
 def tick(state: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
-    r = Room(client=s1).ask(state)  # 1 request
+    r = ROOM.ask(state, client=s1)  # 1 request: three named readings
     return {
         "readings": {
-            "occupied": {"prob": r.answers["occupied"].prob},
+            "occupied": {"prob": float(r.occupied)},
             "comfort": {
                 "score": float(r.comfort),
                 "confidence": r.confidence("comfort"),
-                "probs": r.answers["comfort"].probabilities,
+                "probs": r.comfort.probabilities,
             },
-            "quiet_hours": {"prob": r.answers["quiet_hours"].prob},
+            "quiet_hours": {"prob": float(r.quiet_hours)},
         }
     }
 
 
-@ensure(lambda *a, result=None, **k: result is not None and "action" in result, msg="intent resolves")
+@ensure(
+    lambda *a, result=None, **k: result is not None and "action" in result, msg="intent resolves"
+)
 def interpret(
     command: str, actions: dict, backend: Backend | None = None, floor: float = 0.6
 ) -> dict:
@@ -58,8 +58,7 @@ def interpret(
         dict(actions),
         client=s1,
     )
-    match c:
-        case ChoiceAnswer(confidence=confidence) if confidence < floor:
-            return {"action": None, "why": "below floor", "top": c.choice}
-        case ChoiceAnswer(choice=action, confidence=confidence):
-            return {"action": action, "confidence": confidence}
+    return case[
+        c.confidence < floor : {"action": None, "why": "below floor", "top": c.choice},
+        ... : {"action": c.choice, "confidence": c.confidence},
+    ].ask({})

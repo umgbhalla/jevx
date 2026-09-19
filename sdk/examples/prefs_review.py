@@ -39,13 +39,13 @@ def review_diff(
         for h in hunks:
             tag = _h.sha1(f"{rname}\n{h['file']}\n{h['hunk']}".encode()).hexdigest()[:8]
             qid = f"{rname}::{h['file']}::{tag}"
-            qs[qid] = Noul(f"Does this hunk violate the rule: {rule}?")
+            qs[qid] = Noul(instructions=f"Does this hunk violate the rule: {rule}?")
             keys.append((qid, rname, h))
     out = _decide({"rules": prefs}, qs, s1)
     violations = [
-        {"rule": r, "file": h["file"], "hunk": h["hunk"][:500], "prob": float(out[q].prob)}
+        {"rule": r, "file": h["file"], "hunk": h["hunk"][:500], "prob": float(out[q].noul)}
         for q, r, h in keys
-        if float(out[q].prob) >= bar
+        if float(out[q].noul) >= bar
     ]
     return {
         "violations": violations,

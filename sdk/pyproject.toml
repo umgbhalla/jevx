@@ -5,8 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "jevx"
 version = "0.1.0"
-description = "Minimal Python SDK for Jev (TypeSafe System One decisions). Stdlib-only core."
+description = "Algebraic decision and workflow layer built on the TypeSafe Python SDK."
 requires-python = ">=3.13"
+dependencies = [
+    "typesafe-sdk>=0.7,<0.8",
+]
 
 [project.optional-dependencies]
 codex = ["openai-codex"]

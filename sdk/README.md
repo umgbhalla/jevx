@@ -1,6 +1,8 @@
 # Jevx
 
-Python SDK for TypeSafe System One. The core uses the standard library.
+Python SDK for TypeSafe System One. TypeSafe's official SDK owns HTTP,
+question schemas, retries, and typed responses. Jevx adds lazy algebra,
+policy, effect drivers, and task orchestration.
 
 ## Setup
 
@@ -17,50 +19,123 @@ uv run python examples/task_tree.py
 uv run python examples/cases_machine.py
 ```
 
+Run the small state machine against the live API with the local key:
+
+```sh
+uv run --env-file .env python examples/cases_machine.py --live
+```
+
 ## Compose judgments
 
 `noul()` builds a lazy yes/no expression. `&`, `|`, and `~` compose the
 expression before evaluation, so all distinct leaves go in one request.
 
 ```python
-from jevx import noul
+from jevx import case, noul
 
-safe_to_send = noul("does this answer the request?") & ~noul("does it reveal private data?")
-match safe_to_send.ask(ticket).band(review_at=0.35, act_at=0.8):
-    case "yes":
-        send(ticket)
-    case "review":
-        ask_for_review(ticket)
-    case "no":
-        keep_draft(ticket)
+answered = noul("does this answer the request?")
+private = noul("does it reveal private data?")
+
+policy = case[
+    (answered >= 0.8) & (private <= 0.05): "send",
+    answered >= 0.35: "review",
+    ...: "keep-draft",
+]
+
+decision = policy.ask(ticket)  # One request for both question leaves.
 ```
 
 `P` combines evaluated degrees. `Predicate` combines questions. Its `&` uses
 the product t-norm, `|` uses the probabilistic-sum t-conorm, and `~` uses
 complement. These are fuzzy degrees, not calibrated joint probabilities.
 
-Question batteries use `.ask(state)`. Type choice answers with `Literal` so
-static checkers can narrow their value, then branch with `match`.
+This is Python operator syntax building a Jevx expression tree. `.ask(state)`
+collects its distinct question leaves, sends them together, evaluates the
+math and thresholds locally, then selects the first matching case. It does not
+compile a whole application workflow or execute the selected action.
 
-`match` also works well on choice answers and on `P.band()` results. The
-expression operators compose first; `.ask()` batches the leaves once; `match`
-then handles each explicit outcome.
+For inline batteries, `vector()` names each question once and sends them in one
+request. Noul fields are numeric `P` values, choices retain their distribution,
+and score fields retain confidence and level probabilities:
 
 ```python
-from jevx import ChoiceAnswer, pick
+from jevx import choice, noul, score, vector
 
-match pick("which team?", ticket, {"billing": "charges", "bug": "defects"}):
-    case ChoiceAnswer(choice="billing", confidence=c) if c >= 0.8:
-        route_billing(ticket)
-    case ChoiceAnswer(choice="bug", confidence=c) if c >= 0.8:
-        route_bug(ticket)
-    case ChoiceAnswer(choice=team):
-        request_human_review(team, ticket)
+triage = vector(
+    safe=noul("Is the response safe?"),
+    team=choice("Which team owns it?", ("billing", "bug", "account")),
+    severity=score("How severe is it?", ("low", "medium", "high")),
+)
+result = triage.ask(ticket)
+
+destination = case[
+    (result.safe >= 0.9) & (result.team.confidence >= 0.6): result.team.choice,
+    ...: "human-review",
+].ask({})
+handlers[destination](ticket)  # Only the selected external action runs.
 ```
 
-Use Python unions for domain outcomes, match on the selected case, and compose
-indexed handoffs with `>>`. The [algebraic flow example](examples/algebraic_flow.py)
-shows all three together. This follows the same type-algebra idea as
+`vector()` is a named battery over one shared state. It does not map over
+collections; use an explicit loop when every row needs its own state.
+
+Question instructions, option descriptions, score levels, and Noul outcomes can
+be JSON objects or arrays. Keep their parts labeled instead of flattening them
+into prompt strings. Jevx passes these values through the official TypeSafe
+question models:
+
+```python
+from jevx import choice, noul, score
+
+same_invoice = noul(
+    {"question": "Is this the same invoice?", "compare": ["vendor", "number", "amount"]},
+    true={"what": "All three fields match the ledger entry."},
+    false={"what": "One or more fields differ."},
+)
+owner = choice(
+    {"question": "Which team owns the request?", "focus": "Choose the primary need."},
+    {
+        "billing": {"what": "Charges and refunds", "not_for": "Delivery status"},
+        "orders": {"what": "Tracking, delivery, and returns"},
+    },
+)
+impact = score(
+    {"question": "How severe is the issue?", "judge": "User impact, not patch size."},
+    [{"summary": "low", "signals": ["cosmetic"]}, {"summary": "high", "signals": ["data loss"]}],
+)
+```
+
+See the [TypeSafe structured-entry guide](https://docs.typesafe.ai/primitives/advanced)
+and the [invoice cascade](examples/invoice_cascade.py) for a full battery.
+
+Question batteries use `.ask(state)`. Type choice answers with `Literal` when
+static checkers need to narrow their value. Use ordinary Python for effects
+such as sending a message; the expression DSL returns a decision value.
+
+Question probabilities also support lazy arithmetic. Comparisons create hard
+rules, where `&` means every threshold must pass. These differ from fuzzy
+predicate composition:
+
+```python
+from jevx import case, noul
+
+useful = noul("Does it answer the request?")
+leaks = noul("Does it expose private information?")
+quality = 0.7 * useful + 0.3 * ~leaks
+publish = (useful >= 0.75) & (leaks <= 0.05)
+
+decision = case[
+    publish: "send",
+    ...: "review",
+].ask(draft)  # One request for both leaves; thresholds run locally.
+```
+
+Use a rule for explicit thresholds and arithmetic for a weighted score. A
+weighted score is not automatically a calibrated probability.
+
+Use `case[...]` for ordered policy results. Keep Python unions when actions
+have distinct domain data, and compose indexed handoffs with `>>`. The
+[algebraic flow example](examples/algebraic_flow.py) shows typed outcomes and
+handoffs. This follows the same type-algebra idea as
 [Instructor's union and iterable response models](https://python.useinstructor.com/concepts/iterable/),
 while Jevx keeps decision thresholds and branch policy in Python.
 

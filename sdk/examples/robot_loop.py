@@ -10,13 +10,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Literal
 
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import choice
+from jevx.py import noul
+from jevx.py import vector
 
 VERBS = ("forward", "back", "left", "right", "stop", "dock", "snapshot", "done")
 CONFIRM = {"dock"}
@@ -32,12 +32,10 @@ FLOORS = {
 }
 
 
-class Tick(Questions):
-    verb: Literal["forward", "back", "left", "right", "stop", "dock", "snapshot", "done"] = ask(
-        "which single verb advances the mission?"
-    )
-    escalate: bool = ask("is the situation beyond the verb list?", threshold=0.5)
-    done: bool = ask("is the mission complete?", threshold=0.5)
+TICK = vector(
+    verb=choice("which single verb advances the mission?", VERBS),
+    escalate=noul("is the situation beyond the verb list?"),
+)
 
 
 @dataclass
@@ -105,10 +103,10 @@ def mission(bot: SimBot, contract: dict, backend=None, max_steps: int = 40) -> d
             bot.exec("stop")
             return {"result": "aborted", "why": why, "steps": step}
         obs = bot.observe()
-        t = Tick(client=s1).ask({"obs": obs, "goal": bot.goal})  # 1 request
-        if t.escalate:
+        t = TICK.ask({"obs": obs, "goal": bot.goal}, client=s1)  # 1 request
+        if t.escalate >= 0.5:
             return {"result": "escalated", "obs": obs}
-        v = t.verb
+        v = t.verb.choice
         if t.confidence("verb") < FLOORS[v]:
             continue  # below floor: hold position this tick (not counted as repeat)
         if v == last:

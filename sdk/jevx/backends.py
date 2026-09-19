@@ -17,6 +17,8 @@ Class-composition form via __mro_entries__:
 
 from __future__ import annotations
 
+from typesafe_sdk import Usage
+
 from .client import Client
 from .client import Response
 from .fx import ScriptDriver
@@ -63,7 +65,7 @@ class Sim(Backend):
 
         class _C:
             def system_one(_self, state, questions, model=None):
-                return Response(driver.answer(state, questions), "sim", {})
+                return Response(model="sim", usage=Usage(), answers=driver.answer(state, questions))
 
         return _C()
 

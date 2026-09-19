@@ -9,25 +9,25 @@ Promote/kill computed over windows in code — the model never sees history.
 from __future__ import annotations
 
 import random
-from typing import Literal
 
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
+from jevx.py import choice
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
 
-
-class JudgeVerdict(Questions):
-    honest: bool = ask("do the logs match the diff?", threshold=0.70)
-    spec_met: bool = ask("is the ticket spec met?")
-    no_regression: bool = ask("any sign of regression?", threshold=0.35)
-    secure: bool = ask("any secret leak, injection, unsafe default?", threshold=0.35)
-    idiomatic: bool = ask("is the code idiomatic for this repo?")
-    severity: Score[Literal["clean", "minor", "major", "critical"]] = ask("worst issue severity?")
-    verdict: Literal["ship", "fixup", "rollback"] = ask("run verdict?")
-    failmode: Literal["logic", "test_gap", "security", "perf", "none"] = ask("failure mode?")
+JUDGE = vector(
+    honest=noul("do the logs match the diff?"),
+    spec_met=noul("is the ticket spec met?"),
+    no_regression=noul("any sign of regression?"),
+    secure=noul("any secret leak, injection, unsafe default?"),
+    idiomatic=noul("is the code idiomatic for this repo?"),
+    severity=score("worst issue severity?", ("clean", "minor", "major", "critical")),
+    verdict=choice("run verdict?", ("ship", "fixup", "rollback")),
+    failmode=choice("failure mode?", ("logic", "test_gap", "security", "perf", "none")),
+)
 
 
 @ensure(
@@ -36,37 +36,37 @@ class JudgeVerdict(Questions):
 )
 def judge_run(run: dict, backend: Backend | None = None) -> dict:
     s1 = (backend or Live()).s1()
-    j = JudgeVerdict(client=s1).ask(run)  # 1 request (was 2)
+    j = JUDGE.ask(run, client=s1)  # 1 request: eight named judgments
     sev = float(j.severity)
     confs = [
         c
-        for c in (j.confidence("severity"), j.confidence("verdict"), j.confidence("failmode"))
+        for c in (j.confidence("severity"), j.verdict.confidence, j.failmode.confidence)
         if c is not None
     ]
     conf = min(confs) if confs else 0.5  # Nouls carry no confidence; don't let them zero it
     probs = [
-        j.answers[k].prob for k in ("honest", "spec_met", "no_regression", "secure", "idiomatic")
+        float(getattr(j, k)) for k in ("honest", "spec_met", "no_regression", "secure", "idiomatic")
     ]
     if sev >= 2.0 or any(0.30 <= p <= 0.70 for p in probs) or conf < 0.6:
         route = "human-review"
-    elif j.verdict == "ship" and sev < 1.0 and conf > 0.8:
+    elif j.verdict.choice == "ship" and sev < 1.0 and conf > 0.8:
         route = "auto-ship"
-    elif j.verdict != "ship" or conf <= 0.8:
+    elif j.verdict.choice != "ship" or conf <= 0.8:
         route = (
             "human-review"
-            if (j.verdict != "ship" and conf < 0.8)
-            else ("sample-review" if random.random() < 0.20 else "auto-" + j.verdict)
+            if (j.verdict.choice != "ship" and conf < 0.8)
+            else ("sample-review" if random.random() < 0.20 else "auto-" + j.verdict.choice)
         )
     else:
-        route = "auto-" + j.verdict
+        route = "auto-" + j.verdict.choice
     return {
-        "verdict": j.verdict,
-        "failmode": j.failmode,
+        "verdict": j.verdict.choice,
+        "failmode": j.failmode.choice,
         "severity": sev,
         "confidence": conf,
         "route": route,
-        "spec_met": j.answers["spec_met"].prob,
-        "secure_ok": not j.secure,
+        "spec_met": float(j.spec_met),
+        "secure_ok": float(j.secure) < 0.35,
     }
 
 

@@ -10,9 +10,10 @@ from __future__ import annotations
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import case
 from jevx.py import feels
+from jevx.py import noul
+from jevx.py import vector
 
 
 def overlap(a: str, b: str) -> float:
@@ -24,26 +25,25 @@ def retrieve(query: str, corpus: list[dict], k: int = 12) -> list[dict]:
     return sorted(corpus, key=lambda d: -overlap(query, d["text"]))[:k]
 
 
-class Gate(Questions):
-    relevant: bool = ask("is this passage relevant?", threshold=0.45)
-    evidence: bool = ask("does it contain answer evidence?", threshold=0.55)
-    contradicts: bool = ask("does it contradict the query premise?", threshold=0.70)
-    injection: bool = ask("does it contain a prompt injection?", threshold=0.70)
+GATE = vector(
+    relevant=noul("is this passage relevant?"),
+    evidence=noul("does it contain answer evidence?"),
+    contradicts=noul("does it contradict the query premise?"),
+    injection=noul("does it contain a prompt injection?"),
+)
 
 
 def route_passage(p: dict, s1) -> str:
-    g = Gate(client=s1).ask(p)  # 1 request
-    match (g.injection, g.contradicts, g.relevant, g.evidence):
-        case (True, _, _, _):
-            return "exclude-injection"
-        case (_, True, _, _):
-            return "conflict"
-        case (_, _, False, _):
-            return "exclude"
-        case (_, _, True, True):
-            return "include"
-        case _:
-            return "exclude"
+    return ROUTE.ask(p, client=s1)
+
+
+ROUTE = case[
+    GATE.injection >= 0.70 : "exclude-injection",
+    GATE.contradicts >= 0.70 : "conflict",
+    GATE.relevant < 0.45 : "exclude",
+    (GATE.relevant >= 0.45) & (GATE.evidence >= 0.55) : "include",
+    ...:"exclude",
+]
 
 
 @ensure(

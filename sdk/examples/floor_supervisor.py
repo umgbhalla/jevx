@@ -100,7 +100,7 @@ def build_steer(progress: float, stuck: float, off_track: float, events: list[st
 
 
 def _p(ans) -> float:
-    return float(ans.prob)
+    return float(ans.noul)
 
 
 @ensure(

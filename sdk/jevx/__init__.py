@@ -17,7 +17,6 @@ from .contracts import ensure
 from .contracts import require
 from .errors import AuthError
 from .errors import JevError
-from .errors import OverloadedError
 from .errors import RateLimitError
 from .errors import ServerError
 from .errors import ValidationError
@@ -47,14 +46,20 @@ from .programs import surrogate
 from .prompts import PROMPTS
 from .prompts import render
 from .py import AmbiguousTruth
+from .py import Case
+from .py import Expr
 from .py import P
 from .py import Predicate
 from .py import Questions
 from .py import Refused
 from .py import Result
+from .py import Rule
 from .py import Score as ScoreValue
 from .py import StaleReplay
+from .py import Vector
 from .py import ask
+from .py import case
+from .py import choice
 from .py import choose_from
 from .py import feels
 from .py import gate
@@ -64,7 +69,10 @@ from .py import rate
 from .py import record
 from .py import replay
 from .py import route
+from .py import score
+from .py import vector
 from .questions import Choice
+from .questions import JSONContent
 from .questions import Noul
 from .questions import Score
 from .relational import Table
@@ -88,6 +96,7 @@ __all__ = [
     "AsyncClient",
     "AuthError",
     "Backend",
+    "Case",
     "Choice",
     "ChoiceAnswer",
     "Checkpoint",
@@ -96,6 +105,7 @@ __all__ = [
     "ContractError",
     "Decider",
     "Driver",
+    "Expr",
     "FakeSystem2",
     "JevError",
     "LazyS2",
@@ -103,7 +113,6 @@ __all__ = [
     "LiveDriver",
     "Noul",
     "NoulAnswer",
-    "OverloadedError",
     "P",
     "Predicate",
     "PROMPTS",
@@ -115,6 +124,7 @@ __all__ = [
     "ReplayDriver",
     "Response",
     "Result",
+    "Rule",
     "RetryPolicy",
     "Score",
     "ScoreAnswer",
@@ -128,8 +138,11 @@ __all__ = [
     "TaskRun",
     "TraceDriver",
     "Uses",
+    "Vector",
     "ValidationError",
     "ask",
+    "case",
+    "choice",
     "blast_of",
     "cases",
     "checkpointed",
@@ -151,6 +164,7 @@ __all__ = [
     "require",
     "risk",
     "route",
+    "score",
     "routes_from",
     "run",
     "surrogate",
@@ -160,7 +174,9 @@ __all__ = [
     "verdict",
     "Ix",
     "IxStage",
+    "JSONContent",
     "stage",
     "start",
     "task",
+    "vector",
 ]

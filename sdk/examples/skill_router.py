@@ -7,12 +7,12 @@ a choice (abstain), never inferred from low confidence.
 
 from __future__ import annotations
 
-from jevx.answers import ChoiceAnswer
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.py import Questions
 from jevx.py import ask
+from jevx.py import case
 from jevx.py import feels
 from jevx.py import pick
 
@@ -23,7 +23,10 @@ class Gates(Questions):
     prose_ok: bool = ask("could a generalist satisfy this in prose with no tools?")
 
 
-@ensure(lambda *a, result=None, **k: result is not None and "skill" in result, msg="route returns skill key")
+@ensure(
+    lambda *a, result=None, **k: result is not None and "skill" in result,
+    msg="route returns skill key",
+)
 def route(
     request: str,
     skills: list[dict],
@@ -49,9 +52,15 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
         client=s1,
     )
     g = Gates(client=s1).ask({"request": request})  # 1 request
-    match (g.acts, g.procedure, g.prose_ok):
-        case (False, _, True) | (_, False, True):
-            return {"skill": None, "why": "gates closed"}
+    gate_result = case[
+        (not g.acts and g.prose_ok) or (not g.procedure and g.prose_ok) : {
+            "skill": None,
+            "why": "gates closed",
+        },
+        ...:None,
+    ].ask({})
+    if gate_result is not None:
+        return gate_result
     top = sorted(wide.probabilities.items(), key=lambda kv: -kv[1])[:shortlist]
     by_name = {s["name"]: s for s in skills}
     detail = {n: f"{by_name[n]['description']}\n{by_name[n].get('full', '')}" for n, _ in top}
@@ -72,14 +81,9 @@ def _route_inner(request, skills, s1, shortlist, fits_at) -> dict:
             )
         )
     best = max(fits, key=lambda name: fits[name])
-    match (best, fits[best], second):
-        case ("none", _, _):
-            return {"skill": None, "why": "no fit", "fits": fits}
-        case (_, confidence, _) if confidence < fits_at:
-            return {"skill": None, "why": "no fit", "fits": fits}
-        case (name, _, ChoiceAnswer(choice=choice)) if choice != name:
-            return {"skill": None, "why": "rerank disagrees", "fits": fits}
-        case (name, confidence, ChoiceAnswer()):
-            return {"skill": name, "confidence": confidence, "fits": fits}
-        case _:
-            raise AssertionError("unhandled skill selection")
+    return case[
+        best == "none" : {"skill": None, "why": "no fit", "fits": fits},
+        fits[best] < fits_at : {"skill": None, "why": "no fit", "fits": fits},
+        second.choice != best : {"skill": None, "why": "rerank disagrees", "fits": fits},
+        ... : {"skill": best, "confidence": fits[best], "fits": fits},
+    ].ask({})

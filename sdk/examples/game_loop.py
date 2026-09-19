@@ -11,14 +11,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field
-from typing import Literal
 
 from jevx.backends import Live
 from jevx.contracts import ensure
 from jevx.contracts import require
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
+from jevx.py import case
+from jevx.py import choice
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
 
 ACTIONS = {
     "noop": "Release controls, keep momentum.",
@@ -32,12 +33,11 @@ ACTIONS = {
 JUMP_HOLD = {"right_jump": "right", "right_run_jump": "right_run", "jump": "noop"}
 
 
-class Tick(Questions):
-    action: Literal[
-        "noop", "right", "right_jump", "right_run", "right_run_jump", "jump", "left"
-    ] = ask("Which controller macro should commit next?")
-    jump_needed: bool = ask("Should a forward jump begin or remain held now?")
-    danger: Score[Literal["safe", "caution", "threat"]] = ask("How dangerous is the immediate situation?")
+TICK = vector(
+    action=choice("Which controller macro should commit next?", ACTIONS),
+    jump_needed=noul("Should a forward jump begin or remain held now?"),
+    danger=score("How dangerous is the immediate situation?", ("safe", "caution", "threat")),
+)
 
 
 @dataclass
@@ -119,8 +119,9 @@ JUMP_MAP = {
 
 
 @ensure(
-    lambda *a, result=None, **k: result is not None
-    and result["result"] in ("won", "died", "timeout"),
+    lambda *a, result=None, **k: (
+        result is not None and result["result"] in ("won", "died", "timeout")
+    ),
     msg="known game result",
 )
 @require(
@@ -131,13 +132,13 @@ def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
     trace = []
     for _ in range(max_ticks):
         snap = world.snapshot()
-        t = Tick(client=s1).ask(snap)  # 1 request: Choice + Noul + Score
-        a = t.action
-        match (world.air > 0, a in JUMP_HOLD, t.jump_needed):
-            case (True, True, _):  # hold the current jump macro while airborne
-                pass
-            case (_, _, True):
-                a = JUMP_MAP.get(a, "jump")
+        t = TICK.ask(snap, client=s1)  # 1 request: Choice + Noul + Score
+        a = t.action.choice
+        a = case[
+            world.air > 0 and a in JUMP_HOLD : a,
+            t.jump_needed >= 0.5 : JUMP_MAP.get(a, "jump"),
+            ...:a,
+        ].ask({})
         world.step(a)
         trace.append(
             {
@@ -145,7 +146,7 @@ def play(world: SimWorld, backend=None, max_ticks: int = 200) -> dict:
                 "action": a,
                 "danger": float(t.danger),
                 "x": world.x,
-                "conf": t.confidence("action"),
+                "conf": t.action.confidence,
             }
         )
         if not world.alive:

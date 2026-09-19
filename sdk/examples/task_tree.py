@@ -13,7 +13,6 @@ from typing import Any
 from typing import Literal
 from typing import TypedDict
 
-from jevx.answers import ChoiceAnswer
 from jevx.backends import Backend
 from jevx.backends import Sim
 from jevx.fx import ScriptDriver
@@ -27,6 +26,7 @@ from jevx.programs import stuck
 from jevx.programs import tail
 from jevx.programs import topk
 from jevx.py import Predicate
+from jevx.py import case
 from jevx.py import feels
 from jevx.py import noul
 from jevx.py import pick
@@ -92,7 +92,11 @@ def investigate(
     root = _append(history, None, "task", summary=task, evidence=evidence)
     observations = list(prior_observations or [])
     if stuck(observations, window=3):
-        return {"action": "ESCALATE", "why": "three observations show no change", "history": history}
+        return {
+            "action": "ESCALATE",
+            "why": "three observations show no change",
+            "history": history,
+        }
 
     clock = time.monotonic() if now is None else now
     if not assess_due(
@@ -107,11 +111,11 @@ def investigate(
 
     route_state = {"task": task, "evidence": evidence, **_context(history, root)}
     route = pick("which cause best explains the evidence?", route_state, CAUSES, client=s1)
-    match route:
-        case ChoiceAnswer(choice="database_pool", confidence=conf) if conf >= 0.75:
-            route_summary = f"matched database route at {conf:.2f}"
-        case ChoiceAnswer(choice=cause, confidence=conf):
-            route_summary = f"matched {cause} at {conf:.2f}"
+    route_summary = case[
+        route.choice == "database_pool"
+        and route.confidence >= 0.75 : f"matched database route at {route.confidence:.2f}",
+        ... : f"matched {route.choice} at {route.confidence:.2f}",
+    ].ask({})
 
     route_node = _append(
         history,
@@ -121,8 +125,11 @@ def investigate(
         input_state=route_state,
         question="which cause best explains the evidence?",
         options=CAUSES,
-        answer={"choice": route.choice, "probabilities": route.probabilities,
-                "confidence": route.confidence},
+        answer={
+            "choice": route.choice,
+            "probabilities": route.probabilities,
+            "confidence": route.confidence,
+        },
     )
 
     candidates = topk(
@@ -146,20 +153,18 @@ def investigate(
         support_question = f"does the evidence support cause '{cause}'?"
         contradiction_question = f"does the evidence contradict cause '{cause}'?"
         candidate_questions[cause] = (support_question, contradiction_question)
-        rule: Predicate[CandidateState] = (
-            noul(support_question) & ~noul(contradiction_question)
-        )
+        rule: Predicate[CandidateState] = noul(support_question) & ~noul(contradiction_question)
         p = rule.ask(state, client=s1)
         scores[cause] = float(p)
         return p
 
     accepted, rejected = [], []
     for cause in candidates:
-        match supported(cause).band(review_at=0.5, act_at=0.75):
-            case "yes" | "review":
-                accepted.append(cause)
-            case "no":
-                rejected.append(cause)
+        disposition = case[
+            supported(cause) >= 0.5 : "accept",
+            ...:"reject",
+        ].ask(candidate_states[cause])
+        (accepted if disposition == "accept" else rejected).append(cause)
     branch_nodes: dict[Cause, int] = {}
     for cause in candidates:
         branch_nodes[cause] = _append(
@@ -173,16 +178,24 @@ def investigate(
             answer={"probability": scores[cause], "accepted": cause in accepted},
         )
     if not accepted:
-        return {"action": "ESCALATE", "why": "no candidate passed verification",
-                "rejected": rejected, "history": history}
+        return {
+            "action": "ESCALATE",
+            "why": "no candidate passed verification",
+            "rejected": rejected,
+            "history": history,
+        }
 
     best = topk([(scores[cause], cause) for cause in accepted], k=1)[0]
     confidence = joint(route.confidence, scores[best])
     decision = band(confidence, act_at=0.75, review_at=0.5)
     selected = branch_nodes[best]
     if decision != "act":
-        return {"action": "HUMAN_REVIEW" if decision == "review" else "ESCALATE",
-                "cause": best, "confidence": confidence, "history": history}
+        return {
+            "action": "HUMAN_REVIEW" if decision == "review" else "ESCALATE",
+            "cause": best,
+            "confidence": confidence,
+            "history": history,
+        }
 
     prompt_context = _context(history, selected)
     prompt = (
@@ -221,10 +234,21 @@ def investigate(
     )
     observations.append({"page_changed": float(verified) >= 0.75})
     if float(verified) < 0.75:
-        return {"action": "ESCALATE", "why": "plan did not pass verification",
-                "cause": best, "history": history, "head": verify_node}
-    return {"action": "PLAN_READY", "cause": best, "confidence": confidence,
-            "plan": proposal, "history": history, "head": verify_node}
+        return {
+            "action": "ESCALATE",
+            "why": "plan did not pass verification",
+            "cause": best,
+            "history": history,
+            "head": verify_node,
+        }
+    return {
+        "action": "PLAN_READY",
+        "cause": best,
+        "confidence": confidence,
+        "plan": proposal,
+        "history": history,
+        "head": verify_node,
+    }
 
 
 def demo() -> dict:
@@ -245,13 +269,16 @@ def demo() -> dict:
     assert combined.over(0.7)
 
     script = {
-        "c": [{"type": "choice", "choice": "database_pool",
-               "probabilities": {"database_pool": 0.65, "recent_deploy": 0.30,
-                                  "upstream": 0.05}, "confidence": 0.82}],
-        "q0": [{"type": "noul", "noul": 0.85},
-               {"type": "noul", "noul": 0.35}],
-        "q1": [{"type": "noul", "noul": 0.10},
-               {"type": "noul", "noul": 0.90}],
+        "c": [
+            {
+                "type": "choice",
+                "choice": "database_pool",
+                "probabilities": {"database_pool": 0.65, "recent_deploy": 0.30, "upstream": 0.05},
+                "confidence": 0.82,
+            }
+        ],
+        "q0": [{"type": "noul", "noul": 0.85}, {"type": "noul", "noul": 0.35}],
+        "q1": [{"type": "noul", "noul": 0.10}, {"type": "noul", "noul": 0.90}],
         "p": [{"type": "noul", "noul": 0.90}],
     }
     result = investigate(
@@ -265,35 +292,51 @@ def demo() -> dict:
     assert len(branches) == 2
     assert branches[0]["parent"] == branches[1]["parent"]
     assert result["head"] == result["history"][-1]["id"]
-    assert investigate(
-        "no progress",
-        "unchanged",
-        Sim(),
-        prior_observations=[{"page_changed": False}] * 3,
-        now=1.0,
-    )["action"] == "ESCALATE"
-    assert investigate(
-        "not due yet",
-        "unchanged",
-        Sim(),
-        dirty=False,
-        last_assessed=100.0,
-        now=101.0,
-    )["action"] == "WAIT"
+    assert (
+        investigate(
+            "no progress",
+            "unchanged",
+            Sim(),
+            prior_observations=[{"page_changed": False}] * 3,
+            now=1.0,
+        )["action"]
+        == "ESCALATE"
+    )
+    assert (
+        investigate(
+            "not due yet",
+            "unchanged",
+            Sim(),
+            dirty=False,
+            last_assessed=100.0,
+            now=101.0,
+        )["action"]
+        == "WAIT"
+    )
     return result
 
 
 if __name__ == "__main__":
     result = demo()
-    print(json.dumps({
-        "action": result["action"],
-        "cause": result["cause"],
-        "confidence": result["confidence"],
-        "plan": result["plan"],
-        "history": [
-            {"id": n["id"], "parent": n["parent"], "kind": n["kind"],
-             "branch": n.get("branch"), "summary": n["summary"]}
-            for n in result["history"]
-        ],
-        "head": result["head"],
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "action": result["action"],
+                "cause": result["cause"],
+                "confidence": result["confidence"],
+                "plan": result["plan"],
+                "history": [
+                    {
+                        "id": n["id"],
+                        "parent": n["parent"],
+                        "kind": n["kind"],
+                        "branch": n.get("branch"),
+                        "summary": n["summary"],
+                    }
+                    for n in result["history"]
+                ],
+                "head": result["head"],
+            },
+            indent=2,
+        )
+    )

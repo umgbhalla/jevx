@@ -1,38 +1,24 @@
-"""Idiomatic Jev: judgments as Python grammar.
+"""Algebraic judgments and ordered policy expressions.
 
-``feels`` asks yes/no, ``pick`` chooses, ``rate`` scores. ``noul`` builds a
-lazy predicate tree: ``urgent & ~unsafe`` batches both leaves in one request.
-Pattern-match typed answers, declare typed batteries, and keep policy in Python.
+Python's overloaded operators build the expression tree. ``.ask(state)``
+collects its distinct question leaves into one TypeSafe request, then computes
+the arithmetic, thresholds, and first matching case locally.
 
-    from jevx.py import feels, pick, Questions, ask, gate, noul
-    from jevx.answers import ChoiceAnswer
-    from jevx.py import Score
-    from typing import Literal
+    from jevx import case, noul
 
-    safety = noul("is this urgent?") & ~noul("does this expose private data?")
-    match safety.ask(ticket).band(review_at=0.35, act_at=0.8):
-        case "yes":
-            escalate(ticket)
-        case "review":
-            ask_human(ticket)
-        case "no":
-            continue_normally(ticket)
+    answered = noul("does the draft answer the ticket?")
+    leaks = noul("does it expose private information?")
+    ready = (answered >= 0.75) & (leaks <= 0.05)
 
-    match pick("which team?", ticket, {"billing": "...", "bug": "..."}):
-        case ChoiceAnswer(choice="billing", confidence=c) if c > 0.9:
-            bill(ticket)
-        case ChoiceAnswer(choice="bug", confidence=c) if c > 0.9:
-            debug(ticket)
-        case ChoiceAnswer(choice=team):
-            triage(team, ticket)
+    policy = case[
+        ready: "send",
+        answered >= 0.35: "human-review",
+        ...: "revise",
+    ]
+    decision = policy.ask({"ticket": ticket, "draft": draft})
 
-    class Triage(Questions):
-        urgent: bool = ask("reply within the hour?")
-        team: Literal["billing", "bug"] = ask("which team owns it?")
-        sev: Score[Literal["low", "high"]] = ask("how severe?")
-
-    t = Triage().ask(ticket)   # one request; t.urgent is bool, t.team is str
-
+The expression tree compiles to one batched question request per ``ask``.
+It does not compile an entire Python workflow or execute its side effects.
 """
 
 from __future__ import annotations
@@ -47,6 +33,17 @@ import typing as _typing
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
+from numbers import Real
+from operator import add
+from operator import ge
+from operator import gt
+from operator import le
+from operator import lt
+from operator import mul
+from operator import neg
+from operator import pow as power
+from operator import sub
+from operator import truediv
 from typing import Any
 from typing import Literal
 from typing import cast
@@ -57,12 +54,18 @@ from . import fx as _fx
 from .answers import ChoiceAnswer
 from .client import Client
 from .questions import Choice as _ChoiceQ
+from .questions import JSONContent
 from .questions import Noul as _NoulQ
 from .questions import Score as _ScoreQ
+from .questions import to_json as _question_json
 
 __all__ = [
     "AmbiguousTruth",
+    "Case",
     "ChoiceAnswer",
+    "Expr",
+    "JSONContent",
+    "Rule",
     "P",
     "Predicate",
     "Questions",
@@ -71,6 +74,8 @@ __all__ = [
     "Score",
     "StaleReplay",
     "ask",
+    "case",
+    "choice",
     "choose_from",
     "feels",
     "gate",
@@ -80,6 +85,8 @@ __all__ = [
     "record",
     "replay",
     "route",
+    "score",
+    "vector",
 ]
 
 
@@ -147,7 +154,7 @@ class P(float):
         return "no"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Predicate[StateT]:
     """Lazy Noul expression. Operators build a tree; ``ask`` batches its leaves.
 
@@ -162,20 +169,24 @@ class Predicate[StateT]:
 
     def __post_init__(self) -> None:
         valid = (
-            self.op == "leaf"
-            and self.question is not None
-            and self.left is None
-            and self.right is None
-        ) or (
-            self.op == "not"
-            and self.question is None
-            and self.left is not None
-            and self.right is None
-        ) or (
-            self.op in ("and", "or")
-            and self.question is None
-            and self.left is not None
-            and self.right is not None
+            (
+                self.op == "leaf"
+                and self.question is not None
+                and self.left is None
+                and self.right is None
+            )
+            or (
+                self.op == "not"
+                and self.question is None
+                and self.left is not None
+                and self.right is None
+            )
+            or (
+                self.op in ("and", "or")
+                and self.question is None
+                and self.left is not None
+                and self.right is not None
+            )
         )
         if not valid:
             raise ValueError(f"invalid predicate node {self.op!r}")
@@ -199,31 +210,217 @@ class Predicate[StateT]:
     def __invert__(self) -> Predicate[StateT]:
         return Predicate("not", left=self)
 
+    def __add__(self, other: Real | Expr) -> Expr:
+        return _expr(self) + other
+
+    def __radd__(self, other: Real | Expr) -> Expr:
+        return _expr(self).__radd__(other)
+
+    def __sub__(self, other: Real | Expr) -> Expr:
+        return _expr(self) - other
+
+    def __rsub__(self, other: Real | Expr) -> Expr:
+        return _expr(self).__rsub__(other)
+
+    def __mul__(self, other: Real | Expr) -> Expr:
+        return _expr(self) * other
+
+    def __rmul__(self, other: Real | Expr) -> Expr:
+        return _expr(self).__rmul__(other)
+
+    def __truediv__(self, other: Real | Expr) -> Expr:
+        return _expr(self) / other
+
+    def __rtruediv__(self, other: Real | Expr) -> Expr:
+        return _expr(self).__rtruediv__(other)
+
+    def __pow__(self, other: Real | Expr) -> Expr:
+        return _expr(self) ** other
+
+    def __rpow__(self, other: Real | Expr) -> Expr:
+        return _expr(self).__rpow__(other)
+
+    def __neg__(self) -> Expr:
+        return -_expr(self)
+
+    def __abs__(self) -> Expr:
+        return abs(_expr(self))
+
+    def __lt__(self, other: Real | Expr) -> Rule:
+        return _expr(self) < other
+
+    def __le__(self, other: Real | Expr) -> Rule:
+        return _expr(self) <= other
+
+    def __gt__(self, other: Real | Expr) -> Rule:
+        return _expr(self) > other
+
+    def __ge__(self, other: Real | Expr) -> Rule:
+        return _expr(self) >= other
+
     def __bool__(self) -> bool:
         raise AmbiguousTruth("a predicate is unevaluated; call .ask(state).over(threshold)")
 
     def ask(self, state: StateT, *, client: Client | None = None) -> P:
         """Evaluate every leaf in one request, then apply the fuzzy operators."""
-        ids: dict[_NoulQ, str] = {}
+        return _evaluate(self, state, client)
 
-        def collect(node: Predicate[Any]) -> None:
+
+@dataclass(frozen=True, eq=False)
+class Expr:
+    """Lazy numeric expression over Noul questions and ordinary numbers."""
+
+    op: str
+    left: Any
+    right: Any = None
+
+    def _binary(self, op: str, other: Real | Expr) -> Expr:
+        return Expr(op, self, _numeric(other))
+
+    def __add__(self, other: Real | Expr) -> Expr:
+        return self._binary("add", other)
+
+    def __radd__(self, other: Real | Expr) -> Expr:
+        return _expr(other) + self
+
+    def __sub__(self, other: Real | Expr) -> Expr:
+        return self._binary("sub", other)
+
+    def __rsub__(self, other: Real | Expr) -> Expr:
+        return _expr(other) - self
+
+    def __mul__(self, other: Real | Expr) -> Expr:
+        return self._binary("mul", other)
+
+    def __rmul__(self, other: Real | Expr) -> Expr:
+        return _expr(other) * self
+
+    def __truediv__(self, other: Real | Expr) -> Expr:
+        return self._binary("div", other)
+
+    def __rtruediv__(self, other: Real | Expr) -> Expr:
+        return _expr(other) / self
+
+    def __pow__(self, other: Real | Expr) -> Expr:
+        return self._binary("pow", other)
+
+    def __rpow__(self, other: Real | Expr) -> Expr:
+        return _expr(other) ** self
+
+    def __neg__(self) -> Expr:
+        return Expr("neg", self)
+
+    def __abs__(self) -> Expr:
+        return Expr("abs", self)
+
+    def __lt__(self, other: Real | Expr) -> Rule:
+        return Rule("lt", self, _numeric(other))
+
+    def __le__(self, other: Real | Expr) -> Rule:
+        return Rule("le", self, _numeric(other))
+
+    def __gt__(self, other: Real | Expr) -> Rule:
+        return Rule("gt", self, _numeric(other))
+
+    def __ge__(self, other: Real | Expr) -> Rule:
+        return Rule("ge", self, _numeric(other))
+
+    def __bool__(self) -> bool:
+        raise AmbiguousTruth("a lazy expression has no value yet; call .ask(state)")
+
+    def ask(self, state: Any, *, client: Client | None = None) -> float:
+        return _evaluate(self, state, client)
+
+
+@dataclass(frozen=True)
+class Rule:
+    """Hard threshold policy. Unlike Predicate, `&` means both rules pass."""
+
+    op: str
+    left: Any
+    right: Any = None
+
+    def __and__(self, other: Rule) -> Rule:
+        if not isinstance(other, Rule):
+            return NotImplemented
+        return Rule("and", self, other)
+
+    def __or__(self, other: Rule) -> Rule:
+        if not isinstance(other, Rule):
+            return NotImplemented
+        return Rule("or", self, other)
+
+    def __invert__(self) -> Rule:
+        return Rule("not", self)
+
+    def __bool__(self) -> bool:
+        raise AmbiguousTruth("a lazy rule has no result yet; call .ask(state)")
+
+    def ask(self, state: Any, *, client: Client | None = None) -> bool:
+        return _evaluate(self, state, client)
+
+
+def _numeric(value: object) -> Expr | float:
+    if isinstance(value, (Predicate, Expr)):
+        return _expr(value)
+    if isinstance(value, Real):
+        return float(value)
+    raise TypeError(f"expected a numeric expression, got {type(value).__name__}")
+
+
+def _expr(value: Predicate | Expr | Real) -> Expr:
+    return value if isinstance(value, Expr) else Expr("value", value)
+
+
+def _evaluate(root: Any, state: Any, client: Client | None) -> Any:
+    ids: dict[int, str] = {}
+    signatures: dict[str, str] = {}
+    questions: dict[str, _NoulQ] = {}
+
+    def register(question: Any) -> None:
+        key = id(question)
+        if key in ids:
+            return
+        signature = json.dumps(_question_json(question), sort_keys=True)
+        qid = signatures.get(signature)
+        if qid is None:
+            qid = f"q{len(questions)}"
+            signatures[signature] = qid
+            questions[qid] = question
+        ids[key] = qid
+
+    def collect(node: Any) -> None:
+        if isinstance(node, Predicate):
             if node.op == "leaf":
                 assert node.question is not None
-                ids.setdefault(node.question, f"q{len(ids)}")
+                register(node.question)
             else:
                 if node.left is not None:
                     collect(node.left)
                 if node.right is not None:
                     collect(node.right)
+        elif isinstance(node, Expr):
+            collect(node.left)
+            if node.right is not None:
+                collect(node.right)
+        elif isinstance(node, Rule):
+            collect(node.left)
+            if node.right is not None:
+                collect(node.right)
+        elif isinstance(node, (_NoulQ, _ChoiceQ, _ScoreQ)):
+            register(node)
+        elif isinstance(node, Mapping):
+            for child in node.values():
+                collect(child)
 
-        collect(self)
-        questions = {qid: question for question, qid in ids.items()}
-        raw = _decide(state, questions, client)
+    collect(root)
+    raw = _decide(state, questions, client) if questions else {}
 
-        def evaluate(node: Predicate[Any]) -> P:
+    def evaluate(node: Any) -> Any:
+        if isinstance(node, Predicate):
             if node.op == "leaf":
                 assert node.question is not None
-                return P(raw[ids[node.question]].prob)
+                return P(raw[ids[id(node.question)]].noul)
             if node.op == "not":
                 assert node.left is not None
                 return ~evaluate(node.left)
@@ -233,15 +430,64 @@ class Predicate[StateT]:
             if node.op == "or":
                 return evaluate(node.left) | evaluate(node.right)
             raise ValueError(f"unknown predicate operation {node.op!r}")
+        if isinstance(node, Expr):
+            if node.op == "value":
+                return evaluate(node.left)
+            if node.op == "neg":
+                return neg(evaluate(node.left))
+            if node.op == "abs":
+                return abs(evaluate(node.left))
+            left = evaluate(node.left)
+            right = evaluate(node.right)
+            return {
+                "add": add,
+                "sub": sub,
+                "mul": mul,
+                "div": truediv,
+                "pow": power,
+            }[node.op](left, right)
+        if isinstance(node, Rule):
+            if node.op == "and":
+                return evaluate(node.left) and evaluate(node.right)
+            if node.op == "or":
+                return evaluate(node.left) or evaluate(node.right)
+            if node.op == "not":
+                return not evaluate(node.left)
+            return {
+                "lt": lt,
+                "le": le,
+                "gt": gt,
+                "ge": ge,
+            }[node.op](evaluate(node.left), evaluate(node.right))
+        if isinstance(node, (_NoulQ, _ChoiceQ, _ScoreQ)):
+            answer = raw[ids[id(node)]]
+            if isinstance(node, _NoulQ):
+                return P(answer.noul)
+            if isinstance(node, _ChoiceQ):
+                return answer
+            levels = tuple(answer.legend[key] for key in sorted(answer.legend))
+            return Score(
+                answer.score,
+                confidence=answer.confidence,
+                legend=levels,
+                probabilities=answer.probabilities,
+            )
+        if isinstance(node, Mapping):
+            return {key: evaluate(value) for key, value in node.items()}
+        return node
 
-        return evaluate(self)
+    return evaluate(root)
 
 
 def noul(
-    instructions: str, *, true: str | None = None, false: str | None = None
+    instructions: JSONContent,
+    *,
+    true: JSONContent | None = None,
+    false: JSONContent | None = None,
 ) -> Predicate[Any]:
-    """Build a lazy yes/no expression. Combine with ``&``, ``|``, and ``~``."""
-    return Predicate("leaf", question=_NoulQ(instructions, true, false))
+    """Build a lazy Noul expression; instructions and outcome rubrics may be JSON."""
+    criteria = {"true": true, "false": false} if true is not None or false is not None else None
+    return Predicate("leaf", question=_NoulQ(instructions=instructions, criteria=criteria))
 
 
 class Score[LevelT: str](float):
@@ -249,15 +495,25 @@ class Score[LevelT: str](float):
 
     confidence: float
     legend: tuple[LevelT, ...]
+    probabilities: dict[int, float]
 
-    def __new__(cls, value: float, *, confidence: float, legend: tuple) -> Score:
+    def __new__(
+        cls,
+        value: float,
+        *,
+        confidence: float,
+        legend: tuple,
+        probabilities: Mapping[int, float] | None = None,
+    ) -> Score:
         obj = super().__new__(cls, value)
         obj.confidence = confidence
         obj.legend = legend
+        obj.probabilities = dict(probabilities or {})
         return obj
 
     def level(self) -> int:
         return int(round(float(self)))
+
 
 def _score_levels(ann: Any) -> tuple[str, ...] | None:
     if get_origin(ann) is not Score:
@@ -288,7 +544,7 @@ def _sha(state: Any, questions: dict) -> str:
 
 
 def _decide(state: Any, questions: dict, client: Client | None) -> dict[str, Any]:
-    payload = {k: (v.to_json() if hasattr(v, "to_json") else v) for k, v in questions.items()}
+    payload = {k: _question_json(v) for k, v in questions.items()}
     driver = _fx.current()
     if driver is not None:
         if client is not None and not isinstance(driver, _fx.LiveDriver):
@@ -302,7 +558,8 @@ def _decide(state: Any, questions: dict, client: Client | None) -> dict[str, Any
     for hook in _Hooks:
         if r := hook("pre", state, payload):
             return r
-    resp = (client or Client()).system_one(state, payload)
+    live_questions = {k: getattr(v, "_b", v) for k, v in questions.items()}
+    resp = (client or Client()).system_one(state, live_questions)
     out = {k: resp.answers[k] for k in questions}
     for hook in _Hooks:
         hook("post", state, payload, out)
@@ -313,47 +570,154 @@ def _decide(state: Any, questions: dict, client: Client | None) -> dict[str, Any
 
 
 def feels(
-    question: str,
+    question: JSONContent,
     state: Any,
     *,
-    true: str | None = None,
-    false: str | None = None,
+    true: JSONContent | None = None,
+    false: JSONContent | None = None,
     client: Client | None = None,
 ) -> P:
     """Evaluate one yes/no question. Use ``noul`` to batch expressions."""
-    (a,) = _decide(state, {"p": _NoulQ(question, true, false)}, client).values()
-    return P(a.prob)
+    criteria = {"true": true, "false": false} if true is not None or false is not None else None
+    (a,) = _decide(state, {"p": _NoulQ(instructions=question, criteria=criteria)}, client).values()
+    return P(a.noul)
 
 
 def pick[ChoiceT: str](
-    question: str,
+    question: JSONContent,
     state: Any,
-    options: Mapping[ChoiceT, str | None] | Sequence[ChoiceT],
+    options: Mapping[ChoiceT, JSONContent | None] | Sequence[ChoiceT],
     *,
     client: Client | None = None,
-) -> ChoiceAnswer[ChoiceT]:
+) -> ChoiceAnswer:
     """One pick-one judgment -> matchable Choice. Match on it."""
-    if not isinstance(options, Mapping):
-        options = {o: None for o in options}
-    (a,) = _decide(state, {"c": _ChoiceQ(question, dict(options))}, client).values()
+    criteria: Mapping[str, JSONContent | None]
+    if isinstance(options, Mapping):
+        criteria = {str(k): v for k, v in options.items()}
+    else:
+        criteria = {str(option): None for option in options}
+    (a,) = _decide(
+        state,
+        {"c": _ChoiceQ(instructions=question, criteria=criteria)},
+        client,
+    ).values()
     return a
 
 
 def rate(
-    question: str,
+    question: JSONContent,
     state: Any,
-    levels: list | tuple,
+    levels: Sequence[JSONContent],
     *,
     client: Client | None = None,
 ) -> Score:
     """One spectrum judgment -> Score float with .confidence."""
-    (a,) = _decide(state, {"s": _ScoreQ(question, list(levels))}, client).values()
-    return Score(a.score, confidence=a.confidence, legend=tuple(levels))
+    (a,) = _decide(
+        state, {"s": _ScoreQ(instructions=question, criteria=list(levels))}, client
+    ).values()
+    return Score(
+        a.score,
+        confidence=a.confidence,
+        legend=tuple(levels),
+        probabilities=a.probabilities,
+    )
 
 
-def ask(question: str, *, threshold: float = 0.5) -> Any:
+def ask(
+    question: JSONContent,
+    *,
+    threshold: float = 0.5,
+    criteria: Mapping[str, JSONContent | None] | Sequence[JSONContent] | None = None,
+) -> Any:
     """Declare a battery field inside a Questions class (descriptor)."""
-    return _Field(question, threshold)
+    return _Field(question, threshold, criteria)
+
+
+def choice(
+    instructions: JSONContent,
+    options: Mapping[str, JSONContent | None] | Sequence[str],
+) -> _ChoiceQ:
+    """Build an upstream choice question for a named vector field."""
+    criteria = (
+        {str(key): value for key, value in options.items()}
+        if isinstance(options, Mapping)
+        else {str(option): None for option in options}
+    )
+    return _ChoiceQ(instructions=instructions, criteria=criteria)
+
+
+def score(instructions: JSONContent, levels: Sequence[JSONContent]) -> _ScoreQ:
+    """Build an upstream score question for a named vector field."""
+    return _ScoreQ(instructions=instructions, criteria=list(levels))
+
+
+class Vector:
+    """Named scalar judgments, batched against one shared state."""
+
+    def __init__(self, fields: Mapping[str, Any]):
+        if not fields:
+            raise ValueError("vector needs at least one field")
+        invalid = [
+            name
+            for name in fields
+            if not name.isidentifier() or name.startswith("_") or name in {"ask", "fields"}
+        ]
+        if invalid:
+            raise ValueError(f"invalid or reserved vector field(s): {invalid}")
+        self.fields = dict(fields)
+
+    def __getattr__(self, name: str) -> Any:
+        try:
+            return self.fields[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+    def ask(self, state: Any, *, client: Client | None = None) -> Result:
+        values = _evaluate(self.fields, state, client)
+        return Result(values, values, self.fields)
+
+
+def vector(**fields: Any) -> Vector:
+    """Group named questions or lazy expressions into one request."""
+    return Vector(fields)
+
+
+@dataclass(frozen=True)
+class Case:
+    """Ordered, first-match routing over lazy rules; actions are returned, not run."""
+
+    arms: tuple[tuple[Rule | Any, Any], ...]
+
+    def ask(self, state: Any, *, client: Client | None = None) -> Any:
+        rules = {str(i): rule for i, (rule, _) in enumerate(self.arms) if rule is not Ellipsis}
+        results = _evaluate(rules, state, client) if rules else {}
+        for i, (rule, action) in enumerate(self.arms):
+            if rule is Ellipsis:
+                return action
+            if results[str(i)]:
+                return action
+        raise LookupError("no case matched and no default arm was declared")
+
+
+class _CaseBuilder:
+    def __getitem__(self, arms: slice | tuple[slice, ...]) -> Case:
+        rows = arms if isinstance(arms, tuple) else (arms,)
+        parsed = []
+        for row in rows:
+            if not isinstance(row, slice) or row.step is not None:
+                raise TypeError("case arms use `condition: action` syntax")
+            condition, action = row.start, row.stop
+            if condition is not Ellipsis and not isinstance(condition, Rule | bool):
+                raise TypeError("case conditions must be lazy rules or booleans")
+            parsed.append((condition, action))
+        if any(rule is Ellipsis for rule, _ in parsed[:-1]):
+            raise ValueError("the default case must be last")
+        if sum(rule is Ellipsis for rule, _ in parsed) > 1:
+            raise ValueError("only one default case is allowed")
+        return Case(tuple(parsed))
+
+
+case = _CaseBuilder()
 
 
 def _hints(cls: type) -> dict[str, Any]:
@@ -370,9 +734,15 @@ def _hints(cls: type) -> dict[str, Any]:
 
 
 class _Field:
-    def __init__(self, question: str, threshold: float):
+    def __init__(
+        self,
+        question: JSONContent,
+        threshold: float,
+        criteria: Mapping[str, JSONContent | None] | Sequence[JSONContent] | None,
+    ):
         self.question = question
         self.threshold = threshold
+        self.criteria = criteria
         self.name = ""
 
     def __set_name__(self, owner: type, name: str) -> None:
@@ -411,18 +781,23 @@ class Questions[ResultT]:
         qs: dict[str, Any] = {}
         for name, f in self._fields_.items():
             ann = hints[name]
-            qs[name] = _build(f.question, ann)
+            qs[name] = _build(f, ann)
         raw = _decide(state, qs, self._client)
         values, meta = {}, {}
         for name, f in self._fields_.items():
             ann = hints[name]
             a = raw[name]
             if ann is bool:
-                values[name] = a.prob >= f.threshold
+                values[name] = a.noul >= f.threshold
             elif get_origin(ann) is Literal:
                 values[name] = a.choice
             elif (levels := _score_levels(ann)) is not None:
-                values[name] = Score(a.score, confidence=a.confidence, legend=levels)
+                values[name] = Score(
+                    a.score,
+                    confidence=a.confidence,
+                    legend=levels,
+                    probabilities=a.probabilities,
+                )
             else:
                 raise TypeError(f"unsupported annotation for {name}: {ann!r}")
             meta[name] = a
@@ -440,13 +815,25 @@ def _pytype(ann: Any) -> type:
     raise TypeError(f"unsupported annotation: {ann!r}")
 
 
-def _build(question: str, ann: Any) -> Any:
+def _build(field: _Field, ann: Any) -> Any:
     if ann is bool:
-        return _NoulQ(question)
+        return _NoulQ(instructions=field.question, criteria=field.criteria)
     if get_origin(ann) is Literal:
-        return _ChoiceQ(question, {str(o): None for o in get_args(ann)})
+        options = tuple(str(option) for option in get_args(ann))
+        criteria = (
+            field.criteria if field.criteria is not None else {option: None for option in options}
+        )
+        if not isinstance(criteria, Mapping) or set(criteria) != set(options):
+            raise ValueError(f"{field.name}: choice criteria keys must match {options!r}")
+        return _ChoiceQ(
+            instructions=field.question,
+            criteria=criteria,
+        )
     if (levels := _score_levels(ann)) is not None:
-        return _ScoreQ(question, list(levels))
+        criteria = field.criteria if field.criteria is not None else levels
+        if isinstance(criteria, (str, bytes, Mapping)) or len(criteria) != len(levels):
+            raise ValueError(f"{field.name}: score criteria need {len(levels)} ordered levels")
+        return _ScoreQ(instructions=field.question, criteria=list(criteria))
     raise TypeError(f"unsupported annotation: {ann!r}")
 
 
@@ -475,7 +862,7 @@ class Result:
         c = getattr(a, "confidence", None)
         if c is not None:
             return c
-        p = getattr(a, "prob", None)  # Noul: margin from coin-flip as confidence
+        p = float(a) if isinstance(a, P) else getattr(a, "noul", None)
         return abs(p - 0.5) * 2 if p is not None else None
 
     def __repr__(self) -> str:
@@ -497,7 +884,7 @@ class Result:
 # ---------------------------------------------------------------- control
 
 
-def gate(question: str, *, over: float = 0.8, client: Client | None = None):
+def gate(question: JSONContent, *, over: float = 0.8, client: Client | None = None):
     """Refuse the call when P(question about the call) >= over.
 
     The first positional arg (or state= kw) is the judged material;
@@ -530,9 +917,9 @@ def gate(question: str, *, over: float = 0.8, client: Client | None = None):
 
 
 def route(
-    options: Mapping[str, str | None],
+    options: Mapping[str, JSONContent | None],
     *,
-    instructions: str = "Which route?",
+    instructions: JSONContent = "Which route?",
     client: Client | None = None,
 ):
     """Fill the first declared parameter with Jev's pick; judge the first arg.
@@ -577,7 +964,7 @@ def choose_from(
     state: Any,
     routes: dict[str, Any],
     *,
-    instructions: str = "Which route does this call for?",
+    instructions: JSONContent = "Which route does this call for?",
     client: Client | None = None,
 ) -> tuple[str, Any]:
     """Union dispatch: one route question, then fill only the winner.
@@ -599,8 +986,8 @@ def choose_from(
 
 
 def _freeze(answer: Any) -> dict:
-    if hasattr(answer, "prob"):
-        return {"type": "noul", "noul": answer.prob}
+    if hasattr(answer, "noul"):
+        return {"type": "noul", "noul": answer.noul}
     if hasattr(answer, "choice"):
         return {
             "type": "choice",
@@ -610,8 +997,8 @@ def _freeze(answer: Any) -> dict:
         }
     return {
         "type": "score",
-        "score": float(answer),
-        "legend": {str(i): v for i, v in enumerate(getattr(answer, "legend", ()))},
-        "probabilities": dict(getattr(answer, "probabilities", {})),
+        "score": answer.score,
+        "legend": {str(i): v for i, v in answer.legend.items()},
+        "probabilities": {str(i): v for i, v in answer.probabilities.items()},
         "confidence": getattr(answer, "confidence", 0.0),
     }

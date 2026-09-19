@@ -14,8 +14,7 @@ from dataclasses import field
 
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import ask
+from jevx.py import feels
 from jevx.py import pick
 
 MAX_OPTS, PER_TYPE, TOTAL = 255, 10, 60
@@ -50,10 +49,6 @@ class Graph:
         return out[:TOTAL]
 
 
-class Hop(Questions):
-    reached: bool = ask("has the goal been reached at the current node?", threshold=0.5)
-
-
 def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict]], bool]:
     nbrs = g.neighbors(node)[:MAX_OPTS]
     n = g.nodes[node]
@@ -66,8 +61,12 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
         "goal": goal,
     }
     if not nbrs:
-        r = Hop(client=s1).ask({"state": state, "edges": []})
-        return [], bool(r.reached)
+        reached = feels(
+            "has the goal been reached at the current node?",
+            {"state": state, "edges": []},
+            client=s1,
+        )
+        return [], reached.over(0.5)
     keys, crit = [], {}
     for i, e in enumerate(nbrs):
         k = f"e{i}"
@@ -85,8 +84,12 @@ def one_hop(g: Graph, node: str, goal: dict, s1) -> tuple[list[tuple[float, dict
     order = sorted(c.probabilities.items(), key=lambda kv: -kv[1])
     by_key = {k: e for k, e in keys}
     branches = [(p, by_key[k]) for k, p in order if k in by_key]  # drop off-list keys
-    r = Hop(client=s1).ask({**state, "picked": c.choice})
-    return branches, bool(r.reached)
+    reached = feels(
+        "has the goal been reached at the current node?",
+        {**state, "picked": c.choice},
+        client=s1,
+    )
+    return branches, reached.over(0.5)
 
 
 @ensure(

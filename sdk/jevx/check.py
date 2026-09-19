@@ -62,11 +62,9 @@ class _StreamSim:
                     k: _A.parse_answer(k, _draw(inner.spec[k][0], inner.spec[k][1], inner.rng))
                     for k in questions
                 }
-                return Response(
-                    parsed,
-                    "fuzz",
-                    {},
-                )
+                from typesafe_sdk import Usage
+
+                return Response(model="fuzz", usage=Usage(), answers=parsed)
 
         return _C()
 

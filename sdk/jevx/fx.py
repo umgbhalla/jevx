@@ -3,7 +3,7 @@
     from jevx.fx import Ask, run, LiveDriver, ReplayDriver, ScriptDriver
 
     async def flow(ticket):
-        answers = await Ask({"triage": Noul("urgent?")}, state=ticket)
+        answers = await Ask({"triage": Noul(instructions="urgent?")}, state=ticket)
         ...
 
     run(LiveDriver(), flow("..."))     # real API
@@ -21,6 +21,7 @@ from typing import Any
 
 from .answers import parse_answer
 from .client import Client
+from .questions import to_json
 
 _stack: contextvars.ContextVar = contextvars.ContextVar("jevx_drivers", default=())
 
@@ -59,10 +60,7 @@ def run(driver: Driver, coro):
                 return e.value
             if not isinstance(yielded, Ask):
                 raise TypeError(f"flow yielded {type(yielded).__name__}, only Ask allowed")
-            payload = {
-                k: (v.to_json() if hasattr(v, "to_json") else v)
-                for k, v in yielded.questions.items()
-            }
+            payload = {k: to_json(v) for k, v in yielded.questions.items()}
             try:
                 value = driver.answer(yielded.state, payload)
             except BaseException as e:
@@ -70,10 +68,7 @@ def run(driver: Driver, coro):
                     yielded = coro.throw(e)
                 except StopIteration as se:
                     return se.value
-                payload = {
-                    k: (v.to_json() if hasattr(v, "to_json") else v)
-                    for k, v in yielded.questions.items()
-                }
+                payload = {k: to_json(v) for k, v in yielded.questions.items()}
                 value = driver.answer(yielded.state, payload)
     finally:
         _stack.reset(tok)

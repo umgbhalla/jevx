@@ -7,67 +7,80 @@ S2 never decides done — S1 declares FINISH.
 
 from __future__ import annotations
 
-from typing import Literal
-
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
-from jevx.py import Questions
-from jevx.py import Score
-from jevx.py import ask
+from jevx.py import case
+from jevx.py import noul
+from jevx.py import score
+from jevx.py import vector
+
+SCOPE = vector(
+    complexity=score("how big is this task?", ("trivial", "small", "large")),
+    testable=noul("can the result be checked by running tests?"),
+)
 
 
-class Scope(Questions):
-    complexity: Score[Literal["trivial", "small", "large"]] = ask("how big is this task?")
-    testable: bool = ask("can the result be checked by running tests?")
+PLAN_CHECK = vector(
+    scoped=noul("is the plan confined to the task?"),
+    has_tests=noul("does the plan include running tests?"),
+)
 
 
-class PlanCheck(Questions):
-    scoped: bool = ask("is the plan confined to the task?")
-    has_tests: bool = ask("does the plan include running tests?")
-
-
-class DiffCheck(Questions):
-    correct: bool = ask("does the diff address the task?")
-    risky: bool = ask("does the diff touch auth, migrations, or deletes?", threshold=0.35)
-    severity: Score[Literal["cosmetic", "notable", "blocking"]] = ask("how severe are remaining issues?")
+DIFF_CHECK = vector(
+    correct=noul("does the diff address the task?"),
+    risky=noul("does the diff touch auth, migrations, or deletes?"),
+    severity=score("how severe are remaining issues?", ("cosmetic", "notable", "blocking")),
+)
 
 
 @ensure(
-    lambda *a, result=None, **k: result is not None
-    and result["action"] in ("FINISH", "ESCALATE"),
+    lambda *a, result=None, **k: result is not None and result["action"] in ("FINISH", "ESCALATE"),
     msg="known supervise action",
 )
 def supervise(task: str, backend: Backend | None = None, max_fixes: int = 3) -> dict:
     bk = backend or Live()
     s1, s2 = bk.s1(), bk.s2()
-    sc = Scope(client=s1).ask(task)  # 1 request
-    if sc.complexity <= 0.5 and sc.testable:
+    sc = SCOPE.ask(task, client=s1)  # 1 request
+    if sc.complexity <= 0.5 and sc.testable >= 0.5:
         out = s2.ask(f"Do it, then run tests. Task: {task}")
-        d = DiffCheck(client=s1).ask({"task": task, "diff": out})  # 1 request
-        match (d.correct, d.risky, d.confidence("correct") >= 0.2):
-            case (True, False, True):
-                return {"action": "FINISH", "mode": "trivial", "output": out}
-            case _:
-                return {"action": "ESCALATE", "why": "trivial path failed checks", "output": out}
+        d = DIFF_CHECK.ask({"task": task, "diff": out}, client=s1)  # 1 request
+        return case[
+            d.correct >= 0.5 and d.risky < 0.35 and d.confidence("correct") >= 0.2 : {
+                "action": "FINISH",
+                "mode": "trivial",
+                "output": out,
+            },
+            ... : {"action": "ESCALATE", "why": "trivial path failed checks", "output": out},
+        ].ask({})
 
     plan = s2.ask(f"Propose a short numbered plan only, no code. Task: {task}")
-    pc = PlanCheck(client=s1).ask({"task": task, "plan": plan})  # 1 request
-    match (pc.scoped, pc.has_tests):
-        case (True, True):
-            pass
-        case _:
-            return {"action": "ESCALATE", "why": "plan rejected", "plan": plan}
+    pc = PLAN_CHECK.ask({"task": task, "plan": plan}, client=s1)  # 1 request
+    plan_ok = case[
+        (pc.scoped >= 0.5) & (pc.has_tests >= 0.5) : True,
+        ...:False,
+    ].ask({})
+    if not plan_ok:
+        return {"action": "ESCALATE", "why": "plan rejected", "plan": plan}
 
     out = ""
     for i in range(max_fixes):
         out = s2.ask(f"Step {i}: implement per plan, run tests, show diff.\nPlan: {plan}")
-        d = DiffCheck(client=s1).ask({"task": task, "diff": out})  # 1 request/turn
-        match (d.correct, d.risky, d.confidence("correct") >= 0.2):
-            case (True, False, True):
-                return {"action": "FINISH", "mode": "planned", "turns": i + 1, "output": out}
-            case _:
-                pass
-        if d.severity >= 1.5:
-            return {"action": "ESCALATE", "why": "blocking issues remain", "output": out}
+        d = DIFF_CHECK.ask({"task": task, "diff": out}, client=s1)  # 1 request/turn
+        decision = case[
+            d.correct >= 0.5 and d.risky < 0.35 and d.confidence("correct") >= 0.2 : {
+                "action": "FINISH",
+                "mode": "planned",
+                "turns": i + 1,
+                "output": out,
+            },
+            d.severity >= 1.5 : {
+                "action": "ESCALATE",
+                "why": "blocking issues remain",
+                "output": out,
+            },
+            ...:None,
+        ].ask({})
+        if decision is not None:
+            return decision
     return {"action": "ESCALATE", "why": "fix budget exhausted", "output": out}

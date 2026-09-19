@@ -13,6 +13,7 @@ from .py import Questions
 from .py import _decide
 from .py import _NoulQ
 from .py import feels
+from .questions import JSONContent
 
 
 class Decider:
@@ -88,7 +89,7 @@ def _run_check(check: Any, current: Any, client: Client | None) -> tuple[bool, s
 def cases(state: Any, *branches: tuple[Any, Any], client: Client | None = None) -> Any:
     """Value dispatch in order: first branch whose predicate holds wins.
 
-    Each branch: (question: str | P | bool | Callable[[], bool], handler).
+    Each branch: (question: JSONContent | P | bool | Callable[[], bool], handler).
     str -> feels(question, state).over() (default 0.5; "q? @0.8" suffix sets bar).
     An else-branch is ("else", handler). No match -> raises LookupError.
     """
@@ -119,6 +120,8 @@ def _holds(pred: Any, state: Any, client: Client | None) -> bool:
             raise ValueError(f"cases(): bad bar in {pred!r}, use 'question @0.8'") from None
         p = feels(q.strip(), state, client=client)
         return p.over(threshold)
+    if isinstance(pred, (dict, list)):
+        return feels(pred, state, client=client).over()
     raise TypeError(f"cases(): bad predicate {pred!r}")
 
 
@@ -131,7 +134,7 @@ def _keep_client(target: Any, kwargs: dict, client: Client | None) -> dict:
 
 def surrogate(
     *,
-    question: str,
+    question: JSONContent,
     reference: Any,
     over: float = 0.8,
     log: list | None = None,
@@ -156,8 +159,8 @@ def surrogate(
         @_f.wraps(fn)
         def wrapper(state: Any, *args: Any, **kwargs: Any):
             call_client = kwargs.get("client", client)
-            (a,) = _decide(state, {"s": _NoulQ(question)}, call_client).values()
-            p = float(a.prob)
+            (a,) = _decide(state, {"s": _NoulQ(instructions=question)}, call_client).values()
+            p = float(a.noul)
             if P(p).over(over):
                 kw = _keep_client(fn, kwargs, client)
                 return fn(state, *args, **kw), {"path": "surrogate", "prob": p}
