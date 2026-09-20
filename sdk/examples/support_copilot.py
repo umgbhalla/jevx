@@ -10,6 +10,7 @@ import jevx as j
 from jevx.backends import Backend
 from jevx.backends import Live
 from jevx.contracts import ensure
+from jevx.redact import scrub
 
 x = j.x
 
@@ -36,14 +37,16 @@ TEMPLATES = {
 HUMAN = "route:human"
 
 
-def redact(ticket: str) -> str:
-    from jevx.redact import scrub
-
-    return scrub(ticket)
-
-
 def _template(team: str) -> str:
     return TEMPLATES[team]
+
+
+def _ready(check):
+    return (
+        (check.answered >= 0.70)
+        & (check.leaks <= 0.30)
+        & (check.overpromises <= 0.30)
+    )
 
 
 @j.s2
@@ -56,21 +59,13 @@ def revise(ticket: str, draft: str, checks: dict) -> str:
     """Revise the customer reply to fix these checks. Do not add unsupported promises."""
 
 
-_READY = (
-    (x.check.answered >= 0.70)
-    & (x.check.leaks <= 0.30)
-    & (x.check.overpromises <= 0.30)
-)
-_REVISED_READY = (
-    (x.recheck.answered >= 0.70)
-    & (x.recheck.leaks <= 0.30)
-    & (x.recheck.overpromises <= 0.30)
-)
+_READY = _ready(x.check)
+_REVISED_READY = _ready(x.recheck)
 
 SUPPORT = (
     j.input(ticket=x)
-    | j.keep(clean=j.compute(redact, x.ticket))
-    | j.keep(triage=TRIAGE.on({"ticket": x.clean}))
+    | j.keep(clean=j.compute(scrub, x.ticket))
+    | j.keep(triage=TRIAGE.on(ticket=x.clean))
     | j.case[
         (x.triage.team.confidence < 0.60)
         | ((x.triage.urgent >= 0.35) & (x.triage.urgent <= 0.70)):
@@ -84,7 +79,7 @@ SUPPORT = (
         ...: j.pass_,
     ]
     | j.keep(draft=draft(x.clean, x.triage.team.choice))
-    | j.keep(check=VERIFY.on({"ticket": x.clean, "draft": x.draft}))
+    | j.keep(check=VERIFY.on(ticket=x.clean, draft=x.draft))
     | j.case[
         _READY: j.stop("send-draft", text=x.draft, triage=x.triage),
         ...: j.pass_,
@@ -100,7 +95,7 @@ SUPPORT = (
             },
         )
     )
-    | j.keep(recheck=VERIFY.on({"ticket": x.clean, "draft": x.revised}))
+    | j.keep(recheck=VERIFY.on(ticket=x.clean, draft=x.revised))
     | j.case[
         _REVISED_READY:
             j.stop("send-draft", text=x.revised, triage=x.triage),

@@ -815,8 +815,14 @@ class Vector:
         values = _evaluate(self.fields, state, client)
         return Result(values, values, self.fields)
 
-    def on(self, state: Any) -> BoundVector:
-        """Bind this battery to a selected record expression."""
+    def on(self, state: Any = None, **fields: Any) -> BoundVector:
+        """Bind this battery to a record expression or named field expressions."""
+        if state is not None and fields:
+            raise TypeError("pass a state mapping or named fields, not both")
+        if fields:
+            state = fields
+        elif state is None:
+            raise TypeError("on() needs a state mapping or named fields")
         return BoundVector(self, state)
 
 
