@@ -63,9 +63,10 @@ r.noul("u")  # prob; NoulAnswer.prob. Choice: r.choice("t") -> (choice, conf)
 
 Idiomatic layer (`sdk/jevx/py.py`):
 ```python
-from jevx.py import feels, pick, Questions, ask
+from jevx import noul, vector
 from jevx.backends import Sim, Live
-if feels("urgent?", ticket, client=Sim({...}).s1()).over(0.8): ...
+checks = vector(urgent=noul("Does this need immediate attention?"))
+if checks.ask(ticket, client=Sim({...}).s1()).urgent >= 0.8: ...
 ```
 
 TS lives outside this repo (`@typesafe-ai/sdk`, Vercel `@ai-sdk/typesafe-ai`).

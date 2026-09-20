@@ -35,7 +35,6 @@ SAFETY = (
 )
 
 
-@j.step
 def classify(confidence: P) -> Outcome:
     """Turn an evaluated degree into an explicit typed outcome."""
     match confidence.band(review_at=0.35, act_at=0.75):

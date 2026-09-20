@@ -21,13 +21,11 @@ from .errors import RateLimitError
 from .errors import ServerError
 from .errors import ValidationError
 from .flow import Flow
-from .flow import Step
 from .flow import flow
 from .flow import input
 from .flow import keep
 from .flow import pass_
 from .flow import require
-from .flow import step
 from .flow import stop
 from .flow import when
 from .fx import Ask
@@ -41,17 +39,9 @@ from .fx import TraceDriver
 from .fx import current
 from .fx import run
 from .fx import use
-from .ix import Ix
-from .ix import IxStage
-from .ix import stage
-from .ix import start
 from .lint import lint
 from .partial import Partial
-from .programs import Decider
-from .programs import cases
-from .programs import compile
 from .programs import repair
-from .programs import routes_from
 from .programs import surrogate
 from .prompts import PROMPTS
 from .prompts import render
@@ -60,7 +50,6 @@ from .py import Case
 from .py import Expr
 from .py import P
 from .py import Predicate
-from .py import Questions
 from .py import Refused
 from .py import Result
 from .py import Rule
@@ -68,7 +57,6 @@ from .py import Score as ScoreValue
 from .py import Select
 from .py import StaleReplay
 from .py import Vector
-from .py import ask
 from .py import case
 from .py import choice
 from .py import choose_from
@@ -82,7 +70,6 @@ from .py import pick
 from .py import rate
 from .py import record
 from .py import replay
-from .py import route
 from .py import score
 from .py import vector
 from .py import x
@@ -120,7 +107,6 @@ __all__ = [
     "Client",
     "ConditionDriver",
     "ContractError",
-    "Decider",
     "Driver",
     "Expr",
     "FakeSystem2",
@@ -135,7 +121,6 @@ __all__ = [
     "Predicate",
     "PROMPTS",
     "Partial",
-    "Questions",
     "RateLimitError",
     "RecordDriver",
     "Refused",
@@ -160,14 +145,11 @@ __all__ = [
     "Uses",
     "Vector",
     "ValidationError",
-    "ask",
     "case",
     "choice",
     "blast_of",
-    "cases",
     "checkpointed",
     "choose_from",
-    "compile",
     "compute",
     "current",
     "ensure",
@@ -191,24 +173,17 @@ __all__ = [
     "require",
     "require_contract",
     "risk",
-    "route",
     "score",
     "s2",
-    "routes_from",
     "run",
     "surrogate",
     "stop",
-    "step",
     "sweep",
     "use",
     "variants",
     "verdict",
     "when",
-    "Ix",
-    "IxStage",
     "JSONContent",
-    "stage",
-    "start",
     "task",
     "vector",
     "x",

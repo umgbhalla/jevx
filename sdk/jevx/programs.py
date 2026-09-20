@@ -1,46 +1,16 @@
-"""Compiled deciders, repair loops, value dispatch, surrogates, route compilers."""
+"""Repair loops, semantic surrogates, and small program helpers."""
 
 from __future__ import annotations
 
-import ast
 import inspect
 from typing import Any
 
 from .client import Client
 from .py import P
-from .py import Predicate
-from .py import Questions
+from .py import Vector
 from .py import _decide
 from .py import _NoulQ
-from .py import feels
 from .questions import JSONContent
-
-
-class Decider:
-    """A validated battery compiled to a closure: thresholds baked, one call.
-
-    dec = compile(Triage)
-    dec(ticket)  -> Triage.Result namedtuple (validated fields only)
-    """
-
-    def __init__(self, owner: type, client: Client | None = None):
-        self.owner = owner
-        self.client = client
-
-    def __call__(self, state: Any, client: Client | None = None) -> Any:
-        c = client or self.client
-        result = self.owner(client=c).ask(state)
-        nt = getattr(self.owner, "Result")
-        return result.as_named(nt)
-
-
-def compile(owner: type, client: Client | None = None) -> Decider:
-    """Validate a Questions battery once; get a callable returning typed results."""
-    if not (isinstance(owner, type) and issubclass(owner, Questions)):
-        raise TypeError("compile() needs a Questions subclass")
-    if not owner._fields_:
-        raise ValueError("compile() needs at least one ask() field")
-    return Decider(owner, client)
 
 
 def _maybe_client(fn: Any, client: Client | None) -> dict:
@@ -61,7 +31,7 @@ def repair(
 
     check(output) -> (ok: bool, critique: str); revise(output, critique) makes
     the next candidate. Returns (final, ok). Bounded; never spins.
-    check/revise may be Questions batteries, callables, or S2-backed fns.
+    check may be a callable or hard-rule Vector; revise may be callable or text.
     """
     current = output() if callable(output) and not isinstance(output, str) else output
     for _ in range(rounds + 1):
@@ -76,53 +46,16 @@ def repair(
 
 
 def _run_check(check: Any, current: Any, client: Client | None) -> tuple[bool, str]:
-    if isinstance(check, type) and issubclass(check, Questions):
-        r = check(client=client).ask(current)
-        bad = [k for k, v in r.as_dict().items() if v is False]
-        return (not bad, f"failed: {bad}" if bad else "")
+    if isinstance(check, Vector):
+        values = check.ask(current, client=client).as_dict()
+        if any(not isinstance(value, bool) for value in values.values()):
+            raise TypeError("repair() vectors must contain hard rules that return bool")
+        failed = [name for name, passed in values.items() if not passed]
+        return not failed, f"failed: {failed}" if failed else ""
     out = check(current)
     if isinstance(out, tuple):
         return bool(out[0]), str(out[1]) if len(out) > 1 else ""
     return bool(out), ""
-
-
-def cases(state: Any, *branches: tuple[Any, Any], client: Client | None = None) -> Any:
-    """Value dispatch in order: first branch whose predicate holds wins.
-
-    Each branch: (question: JSONContent | P | bool | Callable[[], bool], handler).
-    str -> feels(question, state).over() (default 0.5; "q? @0.8" suffix sets bar).
-    An else-branch is ("else", handler). No match -> raises LookupError.
-    """
-    for pred, handler in branches:
-        if pred == "else" or _holds(pred, state, client):
-            return handler(state) if callable(handler) else handler
-    raise LookupError("cases(): no branch held and no else")
-
-
-def _holds(pred: Any, state: Any, client: Client | None) -> bool:
-    if isinstance(pred, bool):
-        return pred
-    if isinstance(pred, P):
-        return pred.over()
-    if isinstance(pred, Predicate):
-        return pred.ask(state, client=client).over()
-    if callable(pred):
-        try:
-            n = len(inspect.signature(pred).parameters)
-        except (TypeError, ValueError):
-            n = 0
-        return bool(pred(state, **_maybe_client(pred, client)) if n else pred())
-    if isinstance(pred, str):
-        q, _, bar = pred.rpartition("@")
-        try:
-            threshold = float(bar) if bar else 0.5
-        except ValueError:
-            raise ValueError(f"cases(): bad bar in {pred!r}, use 'question @0.8'") from None
-        p = feels(q.strip(), state, client=client)
-        return p.over(threshold)
-    if isinstance(pred, (dict, list)):
-        return feels(pred, state, client=client).over()
-    raise TypeError(f"cases(): bad predicate {pred!r}")
 
 
 def _keep_client(target: Any, kwargs: dict, client: Client | None) -> dict:
@@ -173,56 +106,6 @@ def surrogate(
         return wrapper
 
     return deco
-
-
-def routes_from(fn: Any, var: str) -> dict[str, None]:
-    """Compile a match statement's string arms into Choice options.
-
-    Reads fn's source AST, finds `match <var>:` with `case "literal":` arms,
-    returns {literal: None}. Guards and captures are ignored (can't be options).
-
-        def handle(team, t):
-            match team:
-                case "billing": ...
-                case "bug": ...
-        routes_from(handle, "team")  # {"billing": None, "bug": None}
-    """
-    src = inspect.getsource(fn)
-    tree = ast.parse(src)
-    out: dict[str, None] = {}
-    for node in ast.walk(tree):
-        if (
-            not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            or node.name != fn.__name__
-        ):
-            continue
-        for child in ast.walk(node):
-            if child is node or not isinstance(child, ast.Match):
-                continue
-            subj = child.subject
-            name = subj.id if isinstance(subj, ast.Name) else None
-            if name != var:
-                continue
-            for case in child.cases:
-                if case.guard is not None:
-                    continue
-                for pat in _or_values(case.pattern):
-                    if isinstance(pat, ast.Constant) and isinstance(pat.value, str):
-                        out[pat.value] = None
-    if not out:
-        raise ValueError(f"routes_from(): no string arms for {var!r} in {fn.__name__}")
-    return out
-
-
-def _or_values(pattern: ast.AST) -> list:
-    if isinstance(pattern, ast.MatchOr):
-        out = []
-        for p in pattern.patterns:
-            out.extend(_or_values(p))
-        return out
-    if isinstance(pattern, ast.MatchValue):
-        return [pattern.value]
-    return []
 
 
 # ---------------------------------------------------------------- shared loop helpers

@@ -28,8 +28,6 @@ import functools
 import hashlib
 import inspect
 import json
-import sys as _sys
-import typing as _typing
 from builtins import max as _max
 from builtins import min as _min
 from collections.abc import Mapping
@@ -49,10 +47,6 @@ from operator import pow as power
 from operator import sub
 from operator import truediv
 from typing import Any
-from typing import Literal
-from typing import cast
-from typing import get_args
-from typing import get_origin
 
 from . import fx as _fx
 from .answers import ChoiceAnswer
@@ -73,12 +67,10 @@ __all__ = [
     "P",
     "Predicate",
     "Select",
-    "Questions",
     "Refused",
     "Result",
     "Score",
     "StaleReplay",
-    "ask",
     "case",
     "choice",
     "choose_from",
@@ -89,7 +81,6 @@ __all__ = [
     "rate",
     "record",
     "replay",
-    "route",
     "score",
     "vector",
     "x",
@@ -654,18 +645,6 @@ class Score[LevelT: str](float):
         return int(round(float(self)))
 
 
-def _score_levels(ann: Any) -> tuple[str, ...] | None:
-    if get_origin(ann) is not Score:
-        return None
-    (levels,) = get_args(ann)
-    if get_origin(levels) is not Literal:
-        raise TypeError("Score needs Literal['low', 'high', ...] levels")
-    values = get_args(levels)
-    if len(values) < 2 or any(not isinstance(v, str) or not v for v in values):
-        raise TypeError("Score needs at least two non-empty string levels")
-    return values
-
-
 # ---------------------------------------------------------------- internals
 
 _Hooks: list = []  # pre/post hooks for record/replay
@@ -760,16 +739,6 @@ def rate(
         legend=tuple(levels),
         probabilities=a.probabilities,
     )
-
-
-def ask(
-    question: JSONContent,
-    *,
-    threshold: float = 0.5,
-    criteria: Mapping[str, JSONContent | None] | Sequence[JSONContent] | None = None,
-) -> Any:
-    """Declare a battery field inside a Questions class (descriptor)."""
-    return _Field(question, threshold, criteria)
 
 
 def choice(
@@ -880,123 +849,6 @@ case = _CaseBuilder()
 x = Select()
 
 
-def _hints(cls: type) -> dict[str, Any]:
-    """Resolved annotations (class bodies are strings under `from __future__`)."""
-    ns = dict(vars(_sys.modules[__name__]))  # SDK names first (base-class annotations)
-    ns.update(vars(_sys.modules[cls.__module__]))
-    ns.setdefault("Literal", Literal)
-    ns.setdefault("Score", Score)
-    ns.setdefault("bool", bool)
-    out = _typing.get_type_hints(cls, globalns=ns)
-    out.pop("_fields_", None)
-    out.pop("_client", None)
-    return out
-
-
-class _Field:
-    def __init__(
-        self,
-        question: JSONContent,
-        threshold: float,
-        criteria: Mapping[str, JSONContent | None] | Sequence[JSONContent] | None,
-    ):
-        self.question = question
-        self.threshold = threshold
-        self.criteria = criteria
-        self.name = ""
-
-    def __set_name__(self, owner: type, name: str) -> None:
-        self.name = name
-
-
-class Questions[ResultT]:
-    """Declarative battery. Annotations decide the question kind; one request.
-
-    bool -> Noul (threshold per field via ask(..., threshold=))
-    Literal[...] -> Choice
-    Score[Literal[...]] -> Score (raw float position)
-    """
-
-    _fields_: dict[str, _Field] = {}
-
-    def __init_subclass__(cls) -> None:
-        cls._fields_ = {k: v for k, v in cls.__dict__.items() if isinstance(v, _Field)}
-        raw = getattr(cls, "__annotations__", {})
-        for name in cls._fields_:
-            if name not in raw:
-                raise TypeError(f"{cls.__name__}.{name} needs an annotation")
-        import typing as _t
-
-        resolved = _hints(cls)
-        cls.Result = _t.NamedTuple(
-            f"{cls.__name__}Result",
-            [(n, _pytype(resolved[n])) for n in cls._fields_],  # ty: ignore[invalid-named-tuple]
-        )
-
-    def __init__(self, client: Client | None = None):
-        self._client = client
-
-    def ask(self, state: Any) -> ResultT:
-        hints = _hints(self.__class__)
-        qs: dict[str, Any] = {}
-        for name, f in self._fields_.items():
-            ann = hints[name]
-            qs[name] = _build(f, ann)
-        raw = _decide(state, qs, self._client)
-        values, meta = {}, {}
-        for name, f in self._fields_.items():
-            ann = hints[name]
-            a = raw[name]
-            if ann is bool:
-                values[name] = a.noul >= f.threshold
-            elif get_origin(ann) is Literal:
-                values[name] = a.choice
-            elif (levels := _score_levels(ann)) is not None:
-                values[name] = Score(
-                    a.score,
-                    confidence=a.confidence,
-                    legend=levels,
-                    probabilities=a.probabilities,
-                )
-            else:
-                raise TypeError(f"unsupported annotation for {name}: {ann!r}")
-            meta[name] = a
-        return cast(Any, Result(values, meta, self._fields_))
-
-
-def _pytype(ann: Any) -> type:
-    """Annotation -> runtime value type: bool | str | float."""
-    if ann is bool:
-        return bool
-    if get_origin(ann) is Literal:
-        return str
-    if get_origin(ann) is Score:
-        return float
-    raise TypeError(f"unsupported annotation: {ann!r}")
-
-
-def _build(field: _Field, ann: Any) -> Any:
-    if ann is bool:
-        return _NoulQ(instructions=field.question, criteria=field.criteria)
-    if get_origin(ann) is Literal:
-        options = tuple(str(option) for option in get_args(ann))
-        criteria = (
-            field.criteria if field.criteria is not None else {option: None for option in options}
-        )
-        if not isinstance(criteria, Mapping) or set(criteria) != set(options):
-            raise ValueError(f"{field.name}: choice criteria keys must match {options!r}")
-        return _ChoiceQ(
-            instructions=field.question,
-            criteria=criteria,
-        )
-    if (levels := _score_levels(ann)) is not None:
-        criteria = field.criteria if field.criteria is not None else levels
-        if isinstance(criteria, (str, bytes, Mapping)) or len(criteria) != len(levels):
-            raise ValueError(f"{field.name}: score criteria need {len(levels)} ordered levels")
-        return _ScoreQ(instructions=field.question, criteria=list(criteria))
-    raise TypeError(f"unsupported annotation: {ann!r}")
-
-
 class Result:
     """Typed namespace over one battery evaluation. attribute access + .meta."""
 
@@ -1083,33 +935,6 @@ def gate(question: JSONContent, *, over: float = 0.8, client: Client | None = No
     return deco
 
 
-def route(
-    options: Mapping[str, JSONContent | None],
-    *,
-    instructions: JSONContent = "Which route?",
-    client: Client | None = None,
-):
-    """Fill the first declared parameter with Jev's pick; judge the first arg.
-
-    @route({"billing": "...", "bug": "..."})
-    def handle(team, ticket): ...
-    handle(ticket)  # team chosen by Jev; ticket judged AND passed through
-    """
-
-    def deco(fn):
-        @functools.wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any):
-            state = kwargs.get("state", args[0] if args else "")
-            c = pick(instructions, state, dict(options), client=client)
-            wrapper.last_choice = c  # ty: ignore[unresolved-attribute]
-            return fn(c.choice, *args, **kwargs)
-
-        wrapper.last_choice = None  # ty: ignore[unresolved-attribute]
-        return wrapper
-
-    return deco
-
-
 # ---------------------------------------------------------------- replay
 
 
@@ -1137,7 +962,7 @@ def choose_from(
 ) -> tuple[str, Any]:
     """Union dispatch: one route question, then fill only the winner.
 
-    routes: name -> Questions subclass or Vector (filled in a second request
+    routes: name -> Vector (filled in a second request
     with only its questions) | callable(state) (run directly, no second request).
     Returns (name, filled Result | callable return).
     """
@@ -1154,8 +979,6 @@ def choose_from(
         client=client,
     )
     winner = routes[c.choice]
-    if isinstance(winner, type) and issubclass(winner, Questions):
-        return c.choice, winner(client=client).ask(state)
     if isinstance(winner, Vector):
         return c.choice, winner.ask(state, client=client)
     return c.choice, winner(state)

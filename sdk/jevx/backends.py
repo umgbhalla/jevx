@@ -1,18 +1,24 @@
 """Backend bundles: one object carries S1 + S2.
 
+    from jevx import noul, vector
+
     bk = Live()                    # real API + real Codex (lazy)
     bk = Sim(s1_script={...}, s2_texts=[...])   # fully offline
 
     def handle(ticket, backend=None):
         bk = backend or Live()
-        t = Triage(client=bk.s1()).ask(ticket)
+        t = vector(urgent=noul("Does this need attention now?")).ask(
+            ticket, client=bk.s1()
+        )
         draft = bk.s2().ask(...)
 
 Class-composition form via __mro_entries__:
 
     class Flow(Uses(Sim(...))):
         def run(self, ticket):
-            t = Triage(client=self.make_s1()).ask(ticket)
+            t = vector(urgent=noul("Does this need attention now?")).ask(
+                ticket, client=self.make_s1()
+            )
 """
 
 from __future__ import annotations

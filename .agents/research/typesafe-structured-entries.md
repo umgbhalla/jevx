@@ -8,9 +8,8 @@ Date: 2026-09-19
   and Noul true/false criteria accept strings, objects, arrays, or null.
 - Installed `typesafe-sdk` question schemas expose `JSONContent`; verified with
   local Pydantic schemas and nested Choice, Score, Noul construction.
-- `sdk/jevx/py.py` now accepts the upstream `JSONContent` type in builders and
-  class descriptors. Typed `Questions` still checks Choice keys against
-  `Literal` options and Score criteria count against ordered levels.
+- `sdk/jevx/py.py` accepts upstream `JSONContent` values in the Noul, Choice,
+  and Score builders. Named `Vector` fields keep the public authoring API small.
 - `sdk/jevx/lint.py` validates nested JSON content and duplicate structured
   Score levels without converting rubric objects to strings.
 - `sdk/tests/test_algebra.py` verifies request traces preserve nested values.

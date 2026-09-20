@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Callable
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -106,20 +105,6 @@ class Require:
 
 
 @dataclass(frozen=True)
-class Step:
-    fn: Callable[[Any], Any]
-
-    def __call__(self, value: Any) -> Any:
-        return self.fn(value)
-
-    def __or__(self, other: Any) -> Flow:
-        return Flow((self,)) | other
-
-    def __ror__(self, other: Any) -> Flow:
-        return Flow((_stage(other), self))
-
-
-@dataclass(frozen=True)
 class Flow:
     """Immutable linear schedule. Construction is inert; ``run`` executes it."""
 
@@ -210,13 +195,6 @@ def _stage(value: Any) -> Any:
 def flow(first: Any) -> Flow:
     """Start a flow from an askable expression or one-input Python function."""
     return Flow((_stage(first),))
-
-
-def step(fn: Callable[[Any], Any]) -> Step:
-    """Wrap a one-input Python function so it composes with ``|`` directly."""
-    if not callable(fn):
-        raise TypeError("step() needs a callable")
-    return Step(fn)
 
 
 def input(**fields: Any) -> Flow:

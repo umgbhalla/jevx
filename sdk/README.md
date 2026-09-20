@@ -123,9 +123,9 @@ impact = score(
 See the [TypeSafe structured-entry guide](https://docs.typesafe.ai/primitives/advanced)
 and the [invoice cascade](examples/invoice_cascade.py) for a full battery.
 
-Question batteries use `.ask(state)`. Type choice answers with `Literal` when
-static checkers need to narrow their value. Use ordinary Python for effects
-such as sending a message; the expression DSL returns a decision value.
+Use `vector()` to name independent questions about one state. It sends one
+request and returns a named result. Use ordinary Python for effects such as
+sending a message; the expression DSL returns a decision value.
 
 Question probabilities also support lazy arithmetic. Comparisons create hard
 rules, where `&` means every threshold must pass. These differ from fuzzy
@@ -149,7 +149,7 @@ decision = case[
 
 Use `j.x` to select values from the current record, `j.input()` to name run
 inputs, and `j.keep()` to add computed values. Building a flow does not call a
-model. `.run()` executes its stages in order. Questions in one vector or one
+model. `.run()` executes its stages in order. Judgments in one vector or one
 record update share a request; a later update that depends on that result is a
 later request wave.
 
@@ -215,14 +215,24 @@ history. `run.context()` gives the current branch a short ancestor summary;
 `restore=False` to keep a selected branch as the active path across turns.
 
 ```python
+import jevx as j
 from jevx import task
 
 with task("incident", backend) as run:
-    triage = run.ask(Triage, logs)
-    cause = run.pick("likely cause?", {**run.context(), "logs": logs}, causes)
+    triage = run.ask(j.vector(
+        urgent=j.noul("Does this incident need immediate action?"),
+    ), logs)
+    cause = run.pick(
+        "likely cause?",
+        {**run.context(), "logs": logs},
+        ("deploy", "database", "dependency", "unknown"),
+    )
     with run.branch(cause.choice, restore=False):
         fix = run.s2.ask("Investigate and fix...")
-        verified = run.ask(Verify, {"logs": fresh_logs, "fix": fix})
+        verified = run.ask(j.vector(
+            symptoms_gone=j.noul("Are the original symptoms gone?"),
+            root_cause_addressed=j.noul("Does the change address the root cause?"),
+        ), {"logs": fresh_logs, "fix": fix})
 ```
 
 This keeps decisions in Python. The history is ordinary data, so an example can

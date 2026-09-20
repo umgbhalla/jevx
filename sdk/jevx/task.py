@@ -7,7 +7,6 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from contextlib import contextmanager
 from typing import Any
-from typing import overload
 
 from .answers import ChoiceAnswer
 from .backends import Backend
@@ -15,10 +14,7 @@ from .backends import Live
 from .fx import LiveDriver
 from .fx import TraceDriver
 from .fx import use
-from .py import P
 from .py import Predicate
-from .py import Questions
-from .py import Result
 from .py import Rule
 from .py import Vector
 from .py import _freeze
@@ -53,7 +49,7 @@ class _TrackedS2:
 class TaskRun:
     """One task, one backend pair, and one branching decision history.
 
-    Use ``with task(name, backend) as run``. Questions are typed; control flow
+    Use ``with task(name, backend) as run``. Vectors batch typed judgments; control flow
     remains ordinary Python. Branch blocks restore the parent head on exit
     unless ``restore=False`` keeps the selected branch as the active path.
     """
@@ -111,27 +107,8 @@ class TaskRun:
             if restore:
                 self.head = parent
 
-    @overload
-    def ask[ResultT](self, battery: type[Questions[ResultT]], state: Any) -> ResultT: ...
-
-    @overload
-    def ask[StateT](self, predicate: Predicate[StateT], state: StateT) -> P: ...
-
-    @overload
-    def ask(self, battery: Vector, state: Any) -> Result: ...
-
-    @overload
-    def ask(self, rule: Rule, state: Any) -> bool: ...
-
     def ask(self, operation: Any, state: Any) -> Any:
-        if isinstance(operation, type) and issubclass(operation, Questions):
-
-            def invoke():
-                return operation().ask(state)
-
-            kind = "jev.battery"
-            summary = operation.__name__
-        elif isinstance(operation, Predicate):
+        if isinstance(operation, Predicate):
 
             def invoke():
                 return operation.ask(state)
@@ -153,7 +130,7 @@ class TaskRun:
             kind = "jev.vector"
             summary = ", ".join(operation.fields)
         else:
-            raise TypeError("run.ask() expects a Questions class, Vector, Predicate, or Rule")
+            raise TypeError("run.ask() expects a Vector, Predicate, or Rule")
         trace = TraceDriver(LiveDriver(self._s1))
         with use(trace):
             result = invoke()

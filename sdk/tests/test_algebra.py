@@ -31,9 +31,7 @@ from jevx.fx import TraceDriver
 from jevx.fx import use
 from jevx.lint import lint
 from jevx.py import AmbiguousTruth
-from jevx.py import Questions
 from jevx.py import _freeze
-from jevx.py import ask
 from jevx.py import choice
 from jevx.py import choose_from
 from jevx.py import noul
@@ -121,15 +119,6 @@ def test_upstream_score_answers_freeze_to_replay_json():
     frozen = _freeze(answer)
     assert frozen["score"] == 1.5
     assert frozen["legend"] == {"0": "low", "1": "high"}
-
-
-def test_noul_confidence_uses_upstream_answer_field():
-    class Check(Questions):
-        safe: bool = ask("is this safe?")
-
-    with use(ScriptDriver({"safe": [{"type": "noul", "noul": 0.9}]})):
-        result = Check().ask("offline")
-    assert result.confidence("safe") == 0.8
 
 
 def test_named_vector_batches_upstream_question_types():
@@ -234,61 +223,6 @@ def test_structured_entries_reach_typesafe_without_stringification():
     assert driver.trace[0]["questions"]["q0"]["criteria"]["true"]["examples"] == ["4471"]
     assert driver.trace[0]["questions"]["q1"]["criteria"]["orders"]["examples"] == ["Where is it?"]
     assert driver.trace[0]["questions"]["q2"]["criteria"][1]["signals"] == ["data loss", "outage"]
-
-
-def test_questions_class_accepts_structured_instructions_and_criteria():
-    from typing import Literal
-
-    from jevx.py import Score
-
-    class Review(Questions):
-        accepted: bool = ask(
-            {"question": "Does the patch meet the policy?", "inspect": ["diff", "tests"]},
-            criteria={"true": {"what": "all rules pass"}, "false": ["any rule fails"]},
-        )
-        route: Literal["security", "product"] = ask(
-            {"question": "Which team owns it?"},
-            criteria={
-                "security": {"what": "Trust, access, and secrets"},
-                "product": {"what": "Behavior and usability"},
-            },
-        )
-        severity: Score[Literal["low", "high"]] = ask(
-            {"question": "How serious is it?"},
-            criteria=[{"summary": "low"}, {"summary": "high"}],
-        )
-
-    driver = TraceDriver(
-        ScriptDriver(
-            {
-                "accepted": [{"type": "noul", "noul": 0.9}],
-                "route": [
-                    {
-                        "type": "choice",
-                        "choice": "security",
-                        "probabilities": {"security": 0.8, "product": 0.2},
-                        "confidence": 0.8,
-                    }
-                ],
-                "severity": [
-                    {
-                        "type": "score",
-                        "score": 1,
-                        "legend": {"0": "low", "1": "high"},
-                        "probabilities": {"0": 0.1, "1": 0.9},
-                        "confidence": 0.9,
-                    }
-                ],
-            }
-        )
-    )
-
-    with use(driver):
-        result = Review().ask("patch")
-
-    assert result.accepted
-    assert result.route == "security"
-    assert driver.trace[0]["questions"]["route"]["criteria"]["security"]["what"].startswith("Trust")
 
 
 def test_question_lint_accepts_structured_fields_and_finds_duplicate_rubrics():

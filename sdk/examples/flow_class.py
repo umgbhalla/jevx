@@ -1,7 +1,7 @@
 """Class-composed flow: backends as bases via Uses().
 
 Swap Sim(...) for Live() and the same flow runs against real backends —
-no client threading. Questions still use the algebraic vector API.
+no client threading. A vector batches the related judgments.
 """
 
 from __future__ import annotations
