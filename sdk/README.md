@@ -19,6 +19,57 @@ uv run python examples/task_tree.py
 uv run python examples/cases_machine.py
 ```
 
+## Pydantic response models
+
+Declare a batch of focused System One questions as fields of an ordinary
+Pydantic model. `j.ask(...)` carries the question instructions; `| j.level(...)`
+appends ordered Score criteria, `| j.option(name, description)` adds Choice
+options, and `| j.yes(...) | j.no(...)` describes Noul outcomes. Descriptions
+and instructions can be strings or structured JSON objects/arrays.
+
+```python
+from pydantic import BaseModel, computed_field
+import jevx as j
+
+class Triage(BaseModel):
+    severity: j.ScoreAnswer = (
+        j.ask("How severe is the issue?")
+        | j.level("Cosmetic; no functional impact")
+        | j.level("Degraded; a workaround exists")
+        | j.level("Blocked; no workaround exists")
+    )
+    owner: j.ChoiceAnswer = (
+        j.ask({"question": "Who owns this?", "focus": "The primary issue"})
+        | j.option("billing", {"what": "Payment issues"})
+        | j.option("support", {"what": "Product issues"})
+    )
+
+    @computed_field
+    @property
+    def urgent(self) -> bool:
+        return self.severity.score >= 1.5
+
+with j.Client() as client:
+    result: Triage = client.create(
+        response_model=Triage,
+        state={"ticket": ticket, "account": account},
+    )
+print(result.owner.choice, result.owner.probabilities, result.urgent)
+```
+
+The client sends **one request** with the shared `state`, the configured model,
+and named questions derived from the Pydantic fields. Returned fields retain
+the upstream answer models: `NoulAnswer.noul`, `ChoiceAnswer.choice`/
+`probabilities`/`confidence`, and `ScoreAnswer.score`/`legend`/
+`probabilities`/`confidence`. Computed fields and validators are local Pydantic
+logic; they do not create additional model questions. `j.AsyncClient.create`
+offers the same API asynchronously. See
+[`examples/pydantic_triage.py`](examples/pydantic_triage.py) for three Scores
+normalized and weighted in a computed field.
+
+The existing `j.Noul`, `j.Choice`, and `j.Score` exports remain the upstream
+question constructors. Annotate response fields with their `*Answer` types.
+
 Run the small state machine against the live API with the local key:
 
 ```sh

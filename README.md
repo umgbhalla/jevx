@@ -3,6 +3,11 @@
 Jev research collection + Python SDK where System 1 (Jev, algebraic) drives
 System 2 (Codex, organic). See `AGENTS.md`.
 
+The SDK also supports Instructor-style Pydantic response models: declare
+questions with `j.ask(...) | j.level(...)` / `j.option(...)`, then call
+`j.Client().create(response_model=Model, state=...)`. See
+[`sdk/README.md`](sdk/README.md#pydantic-response-models).
+
 ## Citations
 
 ### Official

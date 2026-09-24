@@ -7,7 +7,8 @@ drives S2 (Codex, organic). Examples run on scripted backends; live needs keys.
 
 - `sdk/` — uv project (`uv run pytest`, `uv lock`)
 - `sdk/jevx/` — client (`Client`/`AsyncClient`/`Response{noul,choice,score,get}`),
-  idiomatic `py` layer, `relational`, `lint`, `prompts`,
+  Pydantic `response_model` compiler (`model.py`), idiomatic `py` layer,
+  `relational`, `lint`, `prompts`,
   `s2` (`System2`/`CodexSystem2`/`FakeSystem2`/`LazyS2`), `risk`
 - `sdk/jevx/` also: `fx` (Ask effects + Live/Script/Replay/Record/Condition/Trace
   drivers + `run` interpreter), `backends` (Live/Sim bundles, `Uses` bases),
@@ -31,6 +32,9 @@ drives S2 (Codex, organic). Examples run on scripted backends; live needs keys.
 - `POST https://api.typesafe.ai/v1/systemone`, `{state, model: "jev-latest", questions}` -> `{model, answers, usage}`
 - Three question types: `noul` (P yes, no confidence), `choice` (<=255 opts + confidence), `score` (2-10 ordered levels + confidence)
 - All questions in one request evaluate in parallel — batch aggressively
+- Pydantic models can batch named `*Answer` fields with
+  `ask(...) | option(...)` / `level(...)` / `yes(...) | no(...)` and
+  `Client.create(response_model=..., state=...)`; derived fields run locally
 - Code owns decisions: threshold probs/confidence in your code, never in the model
 - Text-only state (string | object | array); English best; never send secrets
 

@@ -40,6 +40,12 @@ from .fx import current
 from .fx import run
 from .fx import use
 from .lint import lint
+from .model import ask
+from .model import level
+from .model import no
+from .model import option
+from .model import questions_for
+from .model import yes
 from .partial import Partial
 from .programs import repair
 from .programs import surrogate
@@ -146,6 +152,7 @@ __all__ = [
     "Vector",
     "ValidationError",
     "case",
+    "ask",
     "choice",
     "blast_of",
     "checkpointed",
@@ -160,12 +167,16 @@ __all__ = [
     "input",
     "keep",
     "lint",
+    "level",
     "max",
     "min",
+    "no",
+    "option",
     "pick",
     "pass_",
     "noul",
     "rate",
+    "questions_for",
     "record",
     "render",
     "repair",
@@ -187,4 +198,5 @@ __all__ = [
     "task",
     "vector",
     "x",
+    "yes",
 ]
