@@ -128,6 +128,8 @@ def questions_for(response_model: type[BaseModel]) -> dict[str, Noul | Choice | 
         elif kind == "choice":
             if entry_kind != "option" or len(entries) < 2:
                 raise ValueError(f"{name}: Choice needs at least two options")
+            if len(entries) > 255:
+                raise ValueError(f"{name}: Choice accepts at most 255 options")
             questions[name] = Choice(
                 instructions=field.instructions,
                 criteria={entry.name: entry.value for entry in entries},
@@ -145,6 +147,9 @@ def questions_for(response_model: type[BaseModel]) -> dict[str, Noul | Choice | 
 def validate_answers(response_model: type[BaseModel], answers: Mapping[str, Any]) -> BaseModel:
     """Keep upstream distributions and confidence in the returned Pydantic model."""
     questions = questions_for(response_model)
+    unexpected = set(answers) - set(questions)
+    if unexpected:
+        raise ValueError(f"unexpected answer ids: {sorted(unexpected)!r}")
     values = {}
     for name, question in questions.items():
         try:
@@ -156,9 +161,17 @@ def validate_answers(response_model: type[BaseModel], answers: Mapping[str, Any]
         expected = question.type
         if not isinstance(answer, Mapping) or answer.get("type") != expected:
             raise ValueError(f"{name}: expected a {expected} answer")
-        if expected == "choice" and answer.get("choice") not in question.criteria:
-            raise ValueError(f"{name}: choice is outside the declared options")
-        values[name] = parse_answer(name, answer)
+        parsed = parse_answer(name, answer)
+        if expected == "choice":
+            if parsed.choice not in question.criteria:
+                raise ValueError(f"{name}: choice is outside the declared options")
+            if set(parsed.probabilities) != set(question.criteria):
+                raise ValueError(f"{name}: probabilities must cover the declared options")
+        elif expected == "score":
+            levels = set(range(len(question.criteria)))
+            if set(parsed.probabilities) != levels or set(parsed.legend) != levels:
+                raise ValueError(f"{name}: distribution must cover the declared levels")
+        values[name] = parsed
     return response_model.model_validate(values)
 
 

@@ -12,6 +12,7 @@ from typesafe_sdk import TypeSafeClient
 
 from .model import questions_for
 from .model import validate_answers
+from .questions import JSONContent
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
 
@@ -23,12 +24,16 @@ class Client(TypeSafeClient):
         self,
         *,
         response_model: type[ModelT],
-        state,
+        state: JSONContent | BaseModel,
         model: str | None = None,
+        **request_options,
     ) -> ModelT:
         questions = questions_for(response_model)
         kwargs = {"model": model} if model is not None else {}
-        response = self.system_one(state=state, questions=questions, **kwargs)
+        payload_state = state.model_dump(mode="json") if isinstance(state, BaseModel) else state
+        response = self.system_one(
+            state=payload_state, questions=questions, **kwargs, **request_options
+        )
         return validate_answers(response_model, response.answers)
 
 
@@ -39,12 +44,16 @@ class AsyncClient(AsyncTypeSafeClient):
         self,
         *,
         response_model: type[ModelT],
-        state,
+        state: JSONContent | BaseModel,
         model: str | None = None,
+        **request_options,
     ) -> ModelT:
         questions = questions_for(response_model)
         kwargs = {"model": model} if model is not None else {}
-        response = await self.system_one(state=state, questions=questions, **kwargs)
+        payload_state = state.model_dump(mode="json") if isinstance(state, BaseModel) else state
+        response = await self.system_one(
+            state=payload_state, questions=questions, **kwargs, **request_options
+        )
         return validate_answers(response_model, response.answers)
 
 

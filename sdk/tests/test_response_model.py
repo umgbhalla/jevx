@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+from datetime import UTC
+from datetime import datetime
 from types import SimpleNamespace
 
 import httpx2
@@ -104,6 +106,22 @@ def test_response_model_batches_questions_and_keeps_full_answers():
     }
 
 
+def test_pydantic_state_is_serialized_as_json_data():
+    class TicketState(BaseModel):
+        message: str
+        received_at: datetime
+
+    state = TicketState(
+        message="PDF export hangs",
+        received_at=datetime(2026, 9, 24, 12, 30, tzinfo=UTC),
+    )
+    client = StubClient()
+    client.create(response_model=TicketTriage, state=state)
+
+    sent_state, _, _ = client.calls[0]
+    assert sent_state == {"message": "PDF export hangs", "received_at": "2026-09-24T12:30:00Z"}
+
+
 def test_invalid_declarations_fail_before_an_api_call():
     with pytest.raises(TypeError, match="cannot mix"):
         j.ask("question") | j.level("low") | j.option("x")
@@ -135,6 +153,42 @@ def test_undeclared_choice_response_is_rejected():
     client.system_one = lambda *args, **kwargs: SimpleNamespace(answers=bad)
     with pytest.raises(ValueError, match="outside the declared options"):
         client.create(response_model=TicketTriage, state="ticket")
+
+
+def test_answer_distributions_must_match_the_declared_rubric():
+    client = StubClient()
+    bad_choice = {**ANSWERS, "route": {**ANSWERS["route"], "probabilities": {"support": 1.0}}}
+    client.system_one = lambda *args, **kwargs: SimpleNamespace(answers=bad_choice)
+    with pytest.raises(ValueError, match="declared options"):
+        client.create(response_model=TicketTriage, state="ticket")
+
+    bad_score = {**ANSWERS, "severity": {**ANSWERS["severity"], "legend": {"0": "Cosmetic"}}}
+    client.system_one = lambda *args, **kwargs: SimpleNamespace(answers=bad_score)
+    with pytest.raises(ValueError, match="declared levels"):
+        client.create(response_model=TicketTriage, state="ticket")
+
+
+def test_structured_score_levels_and_choice_limit():
+    class Structured(BaseModel):
+        quality: j.ScoreAnswer = (
+            j.ask({"question": "How good?", "inspect": ["ticket"]})
+            | j.level({"what": "Low", "examples": ["No steps"]})
+            | j.level({"what": "High", "examples": ["Steps and environment"]})
+        )
+
+    question = questions_for(Structured)["quality"]
+    assert question.instructions["inspect"] == ["ticket"]
+    assert question.criteria[1]["examples"] == ["Steps and environment"]
+
+    many = j.ask("Which option?")
+    for i in range(256):
+        many |= j.option(f"o{i}")
+
+    class TooMany(BaseModel):
+        answer: j.ChoiceAnswer = many
+
+    with pytest.raises(ValueError, match="at most 255"):
+        questions_for(TooMany)
 
 
 def test_async_client_uses_the_same_compiler_and_model():
