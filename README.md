@@ -1,55 +1,55 @@
 # jevx
 
-Jev research collection + Python SDK where System 1 (Jev, algebraic) drives
-System 2 (Codex, organic). See `AGENTS.md`.
+An Instructor-style Pydantic interface for TypeSafe Jev. Describe Noul, Choice,
+and Score questions as model fields, then send one shared state to all of them
+in a single request.
 
-## Citations
+```python
+from pydantic import BaseModel, computed_field
+import jevx as j
 
-### Official
+class Triage(BaseModel):
+    severity: j.ScoreAnswer = (
+        j.ask("How severe is the reported issue?")
+        | j.level("Cosmetic; no functional impact")
+        | j.level("Degraded feature, but a workaround exists")
+        | j.level("Blocking issue; no workaround exists")
+    )
+    owner: j.ChoiceAnswer = (
+        j.ask("Which team owns the primary issue?")
+        | j.option("billing", "Charges, payments, or refunds")
+        | j.option("support", "Product bugs or troubleshooting")
+        | j.option("human", "Requires a person to decide")
+    )
 
-- TypeSafe docs index: https://docs.typesafe.ai/llms.txt
-- API reference: https://docs.typesafe.ai/api
-- Quickstart: https://docs.typesafe.ai/introduction/quickstart
-- Models/pricing/limits: https://docs.typesafe.ai/models
-- Confidence: https://docs.typesafe.ai/confidence
-- Primitives: https://docs.typesafe.ai/primitives/noul.md, https://docs.typesafe.ai/primitives/choice.md, https://docs.typesafe.ai/primitives/score.md
-- Launch blog: https://typesafe.ai/blog/introducing-system-one-models-and-jev
-- Workflow evals: https://evals.typesafe.ai
-- Jaggedness (jev-1.13): https://docs.typesafe.ai/model-jaggedness/jev-1.13.md
-- Cookbooks: parallel_questions, rerank, semantic_find, function_calling, skill_suggestion, llm_guardrails, consistency_noul/choice, classification_using_confidence, hierarchical_classification (all under https://docs.typesafe.ai/cookbooks/)
+    @computed_field
+    @property
+    def urgent(self) -> bool:
+        return self.severity.score >= 1.5
 
-### Integrations
+with j.Client() as client:
+    result = client.create(
+        response_model=Triage,
+        state={"ticket": ticket, "account": account},
+    )
+```
 
-- LangChain provider: https://docs.langchain.com/oss/python/integrations/providers/typesafe
-- Harness blog: https://www.langchain.com/blog/building-a-harness-with-jev
-- Vercel AI SDK provider: https://ai-sdk.dev/providers/ai-sdk-providers/typesafe-ai
-- Pydantic AI: https://ai.pydantic.dev/models/typesafe/
-- Cloudflare model: https://developers.cloudflare.com/ai/models/typesafe/jev/
+`state` contains the evidence to judge. Each `j.ask(...)` supplies a question's
+`instructions`; `j.level(...)`, `j.option(...)`, and `j.yes(...) | j.no(...)`
+supply its `criteria`. The field name becomes the question ID. Instructions
+and criteria can also contain structured JSON objects or arrays. The returned
+model retains the full answers, including Choice and Score probabilities and
+confidence. Derived Pydantic fields run locally.
 
-### Systems built on Jev (ported or studied here)
+See [setup and the full payload mapping](sdk/README.md), the
+[weighted Score example](sdk/examples/pydantic_triage.py), and the
+[Choice/Noul example](sdk/examples/review_route.py).
 
-- Supervisor: https://github.com/thruwire/foreman
-- Browser agents: https://github.com/browser-use/jev-ultrafast, https://github.com/ndrezn/ts-browser-agent, https://github.com/jkudish/jev-browser, https://github.com/droidrun/mobile-jev, https://github.com/awlevin/typesafe-computer-use, https://github.com/moritzkremb/jev-voice-browser
-- Review: https://github.com/devagrawal09/jev-review
-- Graph: https://github.com/jexp/neo4jev
-- Game loop: https://github.com/fhshaik/typesafe-mario
-- Trading: https://github.com/jarrodwatts/jev-trader
-- SQL judgments: https://github.com/realZachi/pg-jev, https://github.com/giuliosmall/pg_typesafe
-- Email: https://github.com/elie222/inbox-zero, https://github.com/GiesN/typesafe-jev-workflow
-- Compaction: https://github.com/tamaratran/fast-jev-compaction, https://github.com/QuentinDanblon/pi-fast-jev-compaction
-- Routers: https://github.com/gargpratyush/jev-router, https://github.com/matthewp/flue-jev-demo, https://github.com/yusukebe/hono-jev-router
-- Test selection: https://github.com/baronunread/leanest
-- Shell gating: https://github.com/shiftynick/jev-axi
-- Eval/duels: https://github.com/JYeswak/jev_playground
-- Benchmarks: https://github.com/kyotofin/tax-doc-classifier, https://github.com/anisselbd/jev-phishing-bench
-- Search: https://github.com/ellipsis-dev/blink, https://github.com/superagents-lab/jev-search
-- Misc: https://github.com/realZachi/typesafe-adblock, https://github.com/standardagents/jevpilot, https://github.com/WrongStack/WrongStack, https://github.com/can1357/oh-my-pi, https://github.com/dabit3/jev-experiments, https://github.com/kavehmz/typesafe-playground
-- Adapters: https://github.com/typesafe-ai/system-one-adapter-python, https://github.com/typesafe-ai/typesafe-sdk-js
+## Source material
 
-### Directories
+- [TypeSafe API](https://docs.typesafe.ai/api) and [primitives](https://docs.typesafe.ai/primitives)
+- [Structured entries](https://docs.typesafe.ai/primitives/advanced)
+- [Instructor response models](https://python.useinstructor.com/)
 
-- https://github.com/hellogumbo/awesome-jev
-- https://github.com/fatwang2/awesome-jev
-- https://github.com/Anil-matcha/awesome-jev-by-typesafe
-- https://github.com/yibie/awesome-jev
-- https://github.com/cobanov/awesome-jev
+The research notes under `.agents/research/` record earlier explorations;
+`sdk/README.md` describes the supported jevx API.
